@@ -1164,6 +1164,10 @@ async function iniciar() {
     if (id) abrirCaso(id);
   });
 
+  // Deploy de demonstracao (MESA_DEMO=1): a faixa no topo. Falhar aqui nunca
+  // impede a tela de abrir - a fila mostra o erro da API por conta propria.
+  api("/saude").then((s) => { if (s.demo) $("#faixa-demo").hidden = false; }).catch(() => {});
+
   try {
     await carregarFila();
   } catch (erro) {

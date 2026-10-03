@@ -107,6 +107,24 @@ def test_saude_prova_que_a_api_le_o_store(cliente):
     assert corpo["execucao_atual"] == 1
 
 
+def test_faixa_de_demonstracao_so_com_mesa_demo(cliente, monkeypatch):
+    """O deploy publico (Dockerfile.demo) liga MESA_DEMO=1 e a tela mostra a
+    faixa "dados sinteticos". Sem a variavel - a instalacao normal -, nao."""
+    monkeypatch.delenv("MESA_DEMO", raising=False)
+    assert cliente.get("/saude").json()["demo"] is False
+    monkeypatch.setenv("MESA_DEMO", "1")
+    assert cliente.get("/saude").json()["demo"] is True
+
+
+def test_imagem_de_demonstracao_liga_a_faixa_e_nao_leva_o_store_local():
+    """A imagem publica marca a demo e monta o store no build - o
+    outputs/mesa.db de quem fez o build nunca entra (.dockerignore)."""
+    dockerfile = (db.RAIZ / "Dockerfile.demo").read_text(encoding="utf-8")
+    assert "MESA_DEMO=1" in dockerfile and "python -m mesa.ingestao" in dockerfile
+    ignorados = (db.RAIZ / ".dockerignore").read_text(encoding="utf-8").split()
+    assert ".env" in ignorados and "outputs/mesa.db" in ignorados
+
+
 def test_store_inexistente_devolve_503_e_nao_cria_banco_vazio(tmp_path, monkeypatch):
     """conectar() criaria um banco vazio em silencio, e a tela mostraria "0 casos"
     como se fosse verdade. A API recusa em vez de inventar."""
