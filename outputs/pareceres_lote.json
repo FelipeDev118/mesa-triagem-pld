@@ -560,7 +560,7 @@
     ],
     "tokens_total": 1988,
     "latencia_s": 3.34,
-    "cache_hit": false,
+    "cache_hit": true,
     "hash_entrada": "713a3d97f92f980f",
     "flags_deterministicas": {
       "flag_fracionamento": true,
@@ -618,7 +618,7 @@
     ],
     "tokens_total": 1894,
     "latencia_s": 3.27,
-    "cache_hit": false,
+    "cache_hit": true,
     "hash_entrada": "703b6908542c8d65",
     "flags_deterministicas": {
       "flag_fracionamento": false,
@@ -682,7 +682,7 @@
     ],
     "tokens_total": 2155,
     "latencia_s": 3.4,
-    "cache_hit": false,
+    "cache_hit": true,
     "hash_entrada": "fb1e9ef05605a61a",
     "flags_deterministicas": {
       "flag_fracionamento": true,
@@ -734,7 +734,7 @@
     ],
     "tokens_total": 2158,
     "latencia_s": 6.11,
-    "cache_hit": false,
+    "cache_hit": true,
     "hash_entrada": "92b74c2ec1197e80",
     "flags_deterministicas": {
       "flag_fracionamento": false,
@@ -779,7 +779,7 @@
     ],
     "tokens_total": 810,
     "latencia_s": 14.15,
-    "cache_hit": false,
+    "cache_hit": true,
     "hash_entrada": "cc16e0a734567a60",
     "flags_deterministicas": {
       "flag_fracionamento": false,
@@ -788,14 +788,23 @@
     "volume_total_brl": 58601.43,
     "total_sinalizacoes_deterministicas": 1,
     "aderencia": {
-      "fundamentado": false,
-      "motivo": "3/3 valores citados nao correspondem a nenhuma operacao, soma diaria ou agregado do cliente",
-      "valores_confirmados": [],
-      "valores_nao_encontrados": [
-        58600.0,
-        5300.0,
-        3000.0
+      "fundamentado": true,
+      "motivo": "3/3 valores citados conferem",
+      "valores_confirmados": [
+        {
+          "valor": 58600.0,
+          "fonte": "volume_total_cliente"
+        },
+        {
+          "valor": 5300.0,
+          "fonte": "media_cliente"
+        },
+        {
+          "valor": 3000.0,
+          "fonte": "mediana_cliente"
+        }
       ],
+      "valores_nao_encontrados": [],
       "atipicos_incorretos": []
     }
   },
@@ -821,7 +830,7 @@
     ],
     "tokens_total": 787,
     "latencia_s": 2.25,
-    "cache_hit": false,
+    "cache_hit": true,
     "hash_entrada": "3327d246b4322b39",
     "flags_deterministicas": {
       "flag_fracionamento": false,
@@ -870,7 +879,7 @@
     ],
     "tokens_total": 828,
     "latencia_s": 2.41,
-    "cache_hit": false,
+    "cache_hit": true,
     "hash_entrada": "8041a865a6e4c6e9",
     "flags_deterministicas": {
       "flag_fracionamento": false,
@@ -919,7 +928,7 @@
     ],
     "tokens_total": 786,
     "latencia_s": 7.63,
-    "cache_hit": false,
+    "cache_hit": true,
     "hash_entrada": "883646fee1eb9b99",
     "flags_deterministicas": {
       "flag_fracionamento": false,
@@ -964,7 +973,7 @@
     ],
     "tokens_total": 1906,
     "latencia_s": 5.49,
-    "cache_hit": false,
+    "cache_hit": true,
     "hash_entrada": "6e96cca236b24273",
     "flags_deterministicas": {
       "flag_fracionamento": false,
@@ -973,8 +982,8 @@
     "volume_total_brl": 47535.95,
     "total_sinalizacoes_deterministicas": 0,
     "aderencia": {
-      "fundamentado": false,
-      "motivo": "nenhum valor verificavel citado (so limiares, ou nenhum R$ no texto)",
+      "fundamentado": true,
+      "motivo": "cliente sem flags deterministicas - nada a fundamentar",
       "valores_confirmados": [],
       "valores_nao_encontrados": [],
       "atipicos_incorretos": []
@@ -1000,7 +1009,7 @@
     ],
     "tokens_total": 744,
     "latencia_s": 2.6,
-    "cache_hit": false,
+    "cache_hit": true,
     "hash_entrada": "a2447d2ebb68f065",
     "flags_deterministicas": {
       "flag_fracionamento": false,
@@ -1041,7 +1050,7 @@
     ],
     "tokens_total": 781,
     "latencia_s": 1.39,
-    "cache_hit": false,
+    "cache_hit": true,
     "hash_entrada": "975246001195b262",
     "flags_deterministicas": {
       "flag_fracionamento": false,
@@ -1050,8 +1059,8 @@
     "volume_total_brl": 43616.16,
     "total_sinalizacoes_deterministicas": 0,
     "aderencia": {
-      "fundamentado": false,
-      "motivo": "nenhum valor verificavel citado (so limiares, ou nenhum R$ no texto)",
+      "fundamentado": true,
+      "motivo": "cliente sem flags deterministicas - nada a fundamentar",
       "valores_confirmados": [],
       "valores_nao_encontrados": [],
       "atipicos_incorretos": []
@@ -1077,7 +1086,7 @@
     ],
     "tokens_total": 780,
     "latencia_s": 1.41,
-    "cache_hit": false,
+    "cache_hit": true,
     "hash_entrada": "88d64a41de878bd3",
     "flags_deterministicas": {
       "flag_fracionamento": false,
@@ -1086,8 +1095,8 @@
     "volume_total_brl": 42560.82,
     "total_sinalizacoes_deterministicas": 0,
     "aderencia": {
-      "fundamentado": false,
-      "motivo": "nenhum valor verificavel citado (so limiares, ou nenhum R$ no texto)",
+      "fundamentado": true,
+      "motivo": "cliente sem flags deterministicas - nada a fundamentar",
       "valores_confirmados": [],
       "valores_nao_encontrados": [],
       "atipicos_incorretos": []
@@ -1113,7 +1122,7 @@
     ],
     "tokens_total": 806,
     "latencia_s": 5.66,
-    "cache_hit": false,
+    "cache_hit": true,
     "hash_entrada": "005f7c8efd8024c8",
     "flags_deterministicas": {
       "flag_fracionamento": false,
@@ -1154,7 +1163,7 @@
     ],
     "tokens_total": 1860,
     "latencia_s": 7.65,
-    "cache_hit": false,
+    "cache_hit": true,
     "hash_entrada": "0877ce9c7f29641a",
     "flags_deterministicas": {
       "flag_fracionamento": false,
@@ -1195,7 +1204,7 @@
     ],
     "tokens_total": 764,
     "latencia_s": 1.5,
-    "cache_hit": false,
+    "cache_hit": true,
     "hash_entrada": "82ec63ee12b22130",
     "flags_deterministicas": {
       "flag_fracionamento": false,
@@ -1240,7 +1249,7 @@
     ],
     "tokens_total": 1875,
     "latencia_s": 1.45,
-    "cache_hit": false,
+    "cache_hit": true,
     "hash_entrada": "1dff4654a610d37c",
     "flags_deterministicas": {
       "flag_fracionamento": false,
@@ -1281,7 +1290,7 @@
     ],
     "tokens_total": 1900,
     "latencia_s": 6.74,
-    "cache_hit": false,
+    "cache_hit": true,
     "hash_entrada": "2d69f69f402bb5f3",
     "flags_deterministicas": {
       "flag_fracionamento": false,
@@ -1290,8 +1299,8 @@
     "volume_total_brl": 31302.74,
     "total_sinalizacoes_deterministicas": 0,
     "aderencia": {
-      "fundamentado": false,
-      "motivo": "nenhum valor verificavel citado (so limiares, ou nenhum R$ no texto)",
+      "fundamentado": true,
+      "motivo": "cliente sem flags deterministicas - nada a fundamentar",
       "valores_confirmados": [],
       "valores_nao_encontrados": [],
       "atipicos_incorretos": []
@@ -1317,7 +1326,7 @@
     ],
     "tokens_total": 1877,
     "latencia_s": 1.62,
-    "cache_hit": false,
+    "cache_hit": true,
     "hash_entrada": "0178dde4d5faec1e",
     "flags_deterministicas": {
       "flag_fracionamento": false,
@@ -1358,7 +1367,7 @@
     ],
     "tokens_total": 1887,
     "latencia_s": 1.55,
-    "cache_hit": false,
+    "cache_hit": true,
     "hash_entrada": "fa8dc23982981cfd",
     "flags_deterministicas": {
       "flag_fracionamento": false,
@@ -1367,8 +1376,8 @@
     "volume_total_brl": 25968.57,
     "total_sinalizacoes_deterministicas": 0,
     "aderencia": {
-      "fundamentado": false,
-      "motivo": "nenhum valor verificavel citado (so limiares, ou nenhum R$ no texto)",
+      "fundamentado": true,
+      "motivo": "cliente sem flags deterministicas - nada a fundamentar",
       "valores_confirmados": [],
       "valores_nao_encontrados": [],
       "atipicos_incorretos": []
@@ -1394,7 +1403,7 @@
     ],
     "tokens_total": 1825,
     "latencia_s": 2.01,
-    "cache_hit": false,
+    "cache_hit": true,
     "hash_entrada": "a0b9cd3a2a374d20",
     "flags_deterministicas": {
       "flag_fracionamento": false,
@@ -1403,8 +1412,8 @@
     "volume_total_brl": 18713.75,
     "total_sinalizacoes_deterministicas": 0,
     "aderencia": {
-      "fundamentado": false,
-      "motivo": "nenhum valor verificavel citado (so limiares, ou nenhum R$ no texto)",
+      "fundamentado": true,
+      "motivo": "cliente sem flags deterministicas - nada a fundamentar",
       "valores_confirmados": [],
       "valores_nao_encontrados": [],
       "atipicos_incorretos": []

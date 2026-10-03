@@ -6,6 +6,7 @@ import pytest
 
 from conftest import escrever_dataset, op
 from dados import (
+    PARAMETROS_REGRAS,
     aplicar_regras,
     carregar_e_limpar,
     datas_fracionamento,
@@ -204,3 +205,53 @@ def test_todos_os_clientes_inclui_quem_nao_foi_sinalizado(tmp_path):
     assert linha_b["total_sinalizacoes"] == 0
     # sinalizado (CLI-A) vem antes do nao sinalizado (CLI-B) na ordenacao
     assert list(todos["cliente_id"]) == ["CLI-A", "CLI-B"]
+
+
+# ---------- PARAMETROS_REGRAS (passo 0.5 do ROADMAP) ----------
+
+
+def test_parametros_regras_tem_os_valores_do_enunciado():
+    """Guarda contra alterar um limiar sem perceber: estes numeros vem do
+    enunciado e sustentam todos os testes de fronteira acima."""
+    from dados import PARAMETROS_REGRAS
+
+    assert PARAMETROS_REGRAS == {
+        "frac_min_ops": 3,
+        "frac_soma_min": 50000,
+        "frac_max_individual": 20000,
+        "atipico_min_ops": 4,
+        "atipico_fator": 5,
+    }
+
+
+def test_parametro_de_fracionamento_e_realmente_usado():
+    """Extrair para uma constante nao vale nada se a funcao continuar decidindo
+    pelo numero magico. Baixar o limiar tem que mudar o resultado."""
+    # 3 operacoes de 19k: soma 57k > 50k, nenhuma atinge 20k -> dispara no padrao.
+    # (Nao da para testar afrouxando min_ops para 2: com max_individual < 20000,
+    # duas operacoes nunca somam mais de 50000 - o cenario e impossivel por
+    # construcao, e a primeira versao deste teste caiu exatamente nisso.)
+    df = _df_um_dia([19000.0, 19000.0, 19000.0])
+    assert len(flag_fracionamento(df)) == 1
+
+    apertado = {**PARAMETROS_REGRAS, "frac_min_ops": 4}
+    assert flag_fracionamento(df, apertado).empty
+
+
+def test_parametro_de_atipicidade_e_realmente_usado():
+    df = _df_um_dia([100.0, 100.0, 100.0, 100.0, 400.0])  # 400 = 4x a mediana
+    assert not flag_valor_atipico(df)["atipico"].any()
+
+    apertado = {**PARAMETROS_REGRAS, "atipico_fator": 3}
+    assert flag_valor_atipico(df, apertado)["atipico"].sum() == 1
+
+
+def test_data_fora_do_formato_iso_vira_invalida_e_nao_data_errada(tmp_path):
+    """Sem formato fixo, o pandas lia "05/03/2026" como 3 de maio (mes primeiro)
+    num arquivo so com datas brasileiras. Para PLD, dia errado e pior que dia
+    ausente: a Regra 1 soma operacoes POR DIA."""
+    caminho = escrever_dataset(tmp_path, [op("OP-1", "CLI-1", "05/03/2026", 100.0),
+                                          op("OP-2", "CLI-1", "13/03/2026", 100.0)])
+    df, _ = carregar_e_limpar(caminho)
+    assert not df["data_valida"].any()
+    assert df["data"].isna().all()

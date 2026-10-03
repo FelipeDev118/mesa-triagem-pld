@@ -10,8 +10,11 @@ services:
   notebook:
     build: .
     env_file: .env
+    # So em 127.0.0.1 do host: o Jupyter roda sem token (Dockerfile), e publicado
+    # em todas as interfaces qualquer maquina da rede executaria codigo no
+    # container. Mesmo criterio da api.
     ports:
-      - "8888:8888"
+      - "127.0.0.1:8888:8888"
     volumes:
       # outputs montado para que os resultados apareçam na maquina do host, nao so no container
       - ./outputs:/app/outputs
@@ -35,6 +38,59 @@ services:
       - ./outputs:/app/outputs
     command: >
       sh -c "python nivel_3/agente_mcp.py --lote && python nivel_3/comparar_transportes.py"
+
+  # Mesa de Triagem, Fase 0 + importacao do historico: monta o store do zero e
+  # verifica que ele reproduz os numeros da entrega. Sem chave e sem LLM.
+  mesa:
+    build: .
+    volumes:
+      - ./outputs:/app/outputs
+    command: >
+      sh -c "python -m mesa.ingestao && python -m mesa.regras_run &&
+             python -m mesa.importar_cache && python verificar_ambiente.py --store"
+
+  # Fase 1: o worker consome a fila de alertas e exporta os artefatos de outputs/.
+  # Precisa da chave APENAS se algum alerta nao for coberto pelo historico
+  # importado - com o cache completo, roda com zero chamada de API.
+  mesa-triagem:
+    build: .
+    env_file: .env
+    volumes:
+      - ./outputs:/app/outputs
+    command: >
+      sh -c "python -m mesa.triagem && python -m mesa.exportar"
+
+  # Fase 2: a API da Mesa sobre o store. Precisa do store montado antes
+  # (servicos `mesa` e `mesa-triagem`). Documentacao interativa em /docs.
+  #
+  # A porta e publicada SO em 127.0.0.1 do host, de proposito: a API ainda nao
+  # tem autenticacao (X-Analista e identificacao, nao seguranca). Dentro do
+  # container o uvicorn precisa ouvir em 0.0.0.0 para o mapeamento funcionar;
+  # quem restringe a exposicao e o "127.0.0.1:" do lado do host.
+  api:
+    build: .
+    volumes:
+      - ./outputs:/app/outputs
+    ports:
+      - "127.0.0.1:8000:8000"
+    command: uvicorn mesa.api:app --host 0.0.0.0 --port 8000
+
+  # Fase 5: o ciclo agendado. A cada 60 min: ingere os arquivos novos de
+  # dados/entrada/ (pelo sha256 - arquivo ja visto e ignorado), reavalia so os
+  # clientes que mudaram e tria o que ficou novo. Sem arquivo novo, nao grava
+  # nada. Chave necessaria so quando um cliente mudou de fato (chamada de LLM).
+  #
+  # Fora do docker, o equivalente em cron (a cada hora):
+  #   0 * * * *  cd /caminho/do/projeto && .venv/bin/python -m mesa.ciclo >> outputs/ciclo.log 2>&1
+  # Dois ciclos sobrepostos sao barrados por trava de arquivo (outputs/mesa.db.ciclo.lock).
+  mesa-ciclo:
+    build: .
+    env_file: .env
+    volumes:
+      - ./outputs:/app/outputs
+      - ./dados/entrada:/app/dados/entrada
+    command: python -m mesa.ciclo --entrada dados/entrada --a-cada 60
+    restart: unless-stopped
 
   # Verificacao rapida de que o ambiente do container esta igual ao descrito na entrega,
   # sem gastar chamada de LLM.

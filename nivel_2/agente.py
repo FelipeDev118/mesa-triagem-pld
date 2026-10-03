@@ -9,13 +9,13 @@ chama tudo (ver enunciado, Nível 2 Parte B).
 import json
 import os
 import time
-from typing import Literal
+from typing import Literal, Protocol
 
 from dotenv import load_dotenv
 from groq import BadRequestError, Groq, RateLimitError
 from pydantic import BaseModel, ValidationError
 
-from cache_parecer import CacheParecer, calcular_hash
+from cache_parecer import calcular_hash
 from dados import aplicar_regras, carregar_e_limpar, montar_flags, ranking_clientes_sinalizados
 from observabilidade import Coletor, calcular_custo_usd
 from tools import TOOLS_SPEC, historico_cliente
@@ -95,6 +95,21 @@ Seu trabalho:
 Nao chame mais ferramentas depois de decidir responder o JSON final."""
 
 
+class CacheDeParecer(Protocol):
+    """O contrato que rodar_agente() exige de um cache - nada alem disto.
+
+    Era `CacheParecer` concreto. Virou Protocol quando a Mesa de Triagem passou a
+    oferecer um segundo backend (mesa/pareceres.py: log append-only em SQLite, em
+    vez de mapa sobrescrivivel em JSON). O agente nao precisa saber qual dos dois
+    recebeu, e - importante para a direcao da dependencia - nivel_2/ nao pode
+    importar mesa/: a camada de sistema conhece a entrega, nunca o contrario.
+    """
+
+    def obter(self, hash_entrada: str) -> dict | None: ...
+
+    def salvar(self, hash_entrada: str, resultado: dict) -> object: ...
+
+
 class ParecerLLM(BaseModel):
     # O enunciado especifica os niveis como baixo/medio/alto (com acento em "medio").
     # Aceitamos as duas grafias porque o modelo alterna entre elas de forma imprevisivel;
@@ -134,7 +149,7 @@ def _chat_com_retry(max_tentativas: int = 5, **kwargs):
 
 
 def rodar_agente(cliente_id: str, flags: dict, max_turnos: int = 4,
-                 coletor: Coletor | None = None, cache: CacheParecer | None = None) -> dict:
+                 coletor: Coletor | None = None, cache: CacheDeParecer | None = None) -> dict:
     """Ponto de entrada publico: consulta o cache antes de chamar o LLM.
 
     O hash da entrada usa um snapshot de historico_cliente() (nao a base inteira) mais
@@ -250,7 +265,12 @@ def _rodar_agente_sem_cache(cliente_id: str, flags: dict, max_turnos: int = 4,
             for tc in msg.tool_calls:
                 args = json.loads(tc.function.arguments)
                 resultado = _executar_tool(tc.function.name, args)
-                tools_chamadas.append({"tool": tc.function.name, "args": args})
+                # o PAYLOAD entra junto, nao so a chamada: sem ele, reabrir o caso
+                # meses depois mostra o que a base diz HOJE, nao o que o agente viu
+                # quando decidiu. Ver mesa/esquema.sql, tabela evidencias.
+                tools_chamadas.append(
+                    {"tool": tc.function.name, "args": args, "payload": resultado}
+                )
                 mensagens.append(
                     {
                         "role": "tool",

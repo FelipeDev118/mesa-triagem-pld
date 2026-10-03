@@ -118,6 +118,26 @@ def extrair_valores(texto: str) -> list[dict]:
     Deduplica por posicao para nao contar duas vezes um valor que casasse nos dois
     padroes (ex.: "R$ 100,00 BRL"). Um "k" logo apos o numero ("R$14.3k") e abreviacao
     de mil - visto na base real em faixas como "entre R$14.3k e R$19.4k"."""
+    return [
+        {k: v for k, v in item.items() if k not in _CAMPOS_DE_POSICAO}
+        for item in _extrair_com_posicao(texto)
+    ]
+
+
+_CAMPOS_DE_POSICAO = ("inicio", "fim", "trecho_inicio", "trecho_fim")
+
+
+def _extrair_com_posicao(texto: str) -> list[dict]:
+    """O mesmo que extrair_valores(), mais ONDE cada valor esta no texto.
+
+    Existe para a tela da Mesa de Triagem (Fase 3) marcar cada numero citado e
+    liga-lo a sua fonte. A alternativa - a tela procurar os valores no texto por
+    conta propria - seria uma segunda copia deste parser em JavaScript, e este
+    parser ja teve cinco bugs de formato (americano, "k", "BRL"...). Um parser so,
+    aqui, e as posicoes gravadas junto da classificacao que elas ilustram.
+
+    `trecho_inicio`/`trecho_fim` cobrem o que o leitor ve ("R$ 6.913,84"), com o
+    prefixo e sem o espaco final que o `\\s*` do padrao engole."""
     achados: dict[int, dict] = {}
     for padrao in (PADRAO_VALOR_RS, PADRAO_VALOR_BRL_SUFIXO):
         for m in padrao.finditer(texto):
@@ -138,6 +158,8 @@ def extrair_valores(texto: str) -> list[dict]:
                 "tolerancia": tolerancia,
                 "inicio": m.start(1),
                 "fim": m.end(),
+                "trecho_inicio": m.start(),
+                "trecho_fim": len(texto[:m.end()].rstrip()),
             }
 
     ordenados = [achados[k] for k in sorted(achados)]
@@ -150,10 +172,7 @@ def extrair_valores(texto: str) -> list[dict]:
             if CONECTOR_FAIXA.match(entre):
                 atual["e_limiar"] = True
 
-    return [
-        {k: v for k, v in item.items() if k not in ("inicio", "fim")}
-        for item in ordenados
-    ]
+    return ordenados
 
 
 @dataclass
@@ -165,6 +184,11 @@ class Aderencia:
     valores_nao_encontrados: list[float] = field(default_factory=list)
     # valores que EXISTEM na base mas foram citados como "atipicos" sem ter a flag
     atipicos_incorretos: list[dict] = field(default_factory=list)
+    # Um item por valor encontrado no texto, na ordem em que aparece:
+    # {inicio, fim, valor, classe, fonte}. classe e 'confirmado',
+    # 'nao_encontrado', 'atipico_incorreto' ou 'limiar'. E o que a tela usa para
+    # marcar o numero - posicao e classificacao saem da MESMA execucao.
+    marcas: list[dict] = field(default_factory=list)
     fundamentado: bool = True
     motivo: str = ""
 
@@ -216,7 +240,7 @@ def verificar(cliente_id: str, justificativa: str, df: pd.DataFrame) -> Aderenci
     """df ja deve estar limpo/com regras aplicadas (saida de aplicar_regras)."""
     referencias = _referencias_validas(cliente_id, df)
 
-    extraidos = extrair_valores(justificativa)
+    extraidos = _extrair_com_posicao(justificativa)
     verificaveis = [e for e in extraidos if not e["e_limiar"]]
     citados = [e["valor"] for e in verificaveis]
     limiares = [e["valor"] for e in extraidos if e["e_limiar"]]
@@ -230,6 +254,7 @@ def verificar(cliente_id: str, justificativa: str, df: pd.DataFrame) -> Aderenci
         sub.loc[sub["flag_valor_atipico"], "valor_brl"].round(2)
     )
 
+    classificacao: dict[int, tuple[str, str | None]] = {}  # trecho_inicio -> (classe, fonte)
     for item in verificaveis:
         v = item["valor"]
         tolerancia = item.get("tolerancia", TOLERANCIA_R)
@@ -239,9 +264,11 @@ def verificar(cliente_id: str, justificativa: str, df: pd.DataFrame) -> Aderenci
         )
         if not fonte:
             resultado.valores_nao_encontrados.append(v)
+            classificacao[item["trecho_inicio"]] = ("nao_encontrado", None)
             continue
 
         resultado.valores_confirmados.append({"valor": v, "fonte": fonte})
+        classificacao[item["trecho_inicio"]] = ("confirmado", fonte)
 
         # existe, mas foi citado como atipico sendo que nao e?
         if item["citado_como_atipico"] and fonte.startswith("operacao"):
@@ -250,6 +277,18 @@ def verificar(cliente_id: str, justificativa: str, df: pd.DataFrame) -> Aderenci
             )
             if not e_atipico_real:
                 resultado.atipicos_incorretos.append({"valor": v, "fonte": fonte})
+                classificacao[item["trecho_inicio"]] = ("atipico_incorreto", fonte)
+
+    resultado.marcas = [
+        {
+            "inicio": e["trecho_inicio"],
+            "fim": e["trecho_fim"],
+            "valor": e["valor"],
+            "classe": "limiar" if e["e_limiar"] else classificacao[e["trecho_inicio"]][0],
+            "fonte": None if e["e_limiar"] else classificacao[e["trecho_inicio"]][1],
+        }
+        for e in extraidos
+    ]
 
     if not citados:
         # Cliente sem NENHUMA flag deterministica (nem fracionamento, nem valor

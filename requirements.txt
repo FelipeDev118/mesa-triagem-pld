@@ -10,3 +10,10 @@ python-dotenv==1.2.3
 pydantic==2.13.4
 mcp==2.1.0
 pytest==9.1.1
+
+# Mesa de Triagem, Fase 2 (API). uvicorn e httpx ja vinham como dependencia
+# transitiva do mcp, mas agora o codigo depende deles DIRETAMENTE (o servidor e o
+# TestClient) - fixar aqui evita que uma troca de versao do mcp os mova por baixo.
+fastapi==0.141.1
+uvicorn==0.52.4
+httpx==0.28.1

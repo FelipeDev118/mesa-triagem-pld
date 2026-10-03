@@ -4,3 +4,14 @@ __pycache__/
 .env
 .ipynb_checkpoints/
 .pytest_cache/
+outputs/mesa.db
+outputs/mesa.db-wal
+outputs/mesa.db-shm
+# Fase 5: arquivos de operacao que chegam para o ciclo - dado de cliente, nunca
+# versionado - e a trava e o log do ciclo
+dados/entrada/
+outputs/mesa.db.ciclo.lock
+outputs/ciclo.log
+# Fase 6: stores de cenario plantado (python -m mesa.cenario_isca) - reprodutiveis
+# pela semente, nunca versionados
+outputs/cenario_isca/

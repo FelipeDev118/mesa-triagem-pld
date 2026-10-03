@@ -130,7 +130,14 @@ async def rodar_agente_mcp(session: ClientSession, cliente_id: str, flags: dict,
                 # AQUI esta a diferenca: chamada via protocolo MCP, nao import direto
                 resultado_mcp = await session.call_tool(tc.function.name, args)
                 conteudo = resultado_mcp.content[0].text if resultado_mcp.content else "{}"
-                tools_chamadas.append({"tool": tc.function.name, "args": args})
+                # idem nivel_2/agente.py: o payload faz parte da evidencia
+                try:
+                    payload = json.loads(conteudo)
+                except json.JSONDecodeError:
+                    payload = conteudo
+                tools_chamadas.append(
+                    {"tool": tc.function.name, "args": args, "payload": payload}
+                )
                 mensagens.append(
                     {"role": "tool", "tool_call_id": tc.id, "content": conteudo}
                 )

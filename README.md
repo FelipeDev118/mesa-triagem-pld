@@ -58,6 +58,41 @@ python nivel_3/agente_mcp.py --lote        # agente consumindo as tools por MCP
 python nivel_3/comparar_transportes.py     # valida MCP vs. import direto
 ```
 
+## Mesa de Triagem — a ferramenta do analista (evolução pós-entrega)
+
+Depois da entrega, o pipeline em lote virou um sistema de uso diário: o analista abre um caso,
+vê cada número do parecer ligado à operação de onde veio, e registra a decisão. **O sistema
+tria, o humano decide** — nada é concluído sem decisão registrada, e nada é reportado sozinho.
+Todo o desenvolvimento, passo a passo e com a evidência de cada aceite, está em
+[`.claude/features/ROADMAP.txt`](.claude/features/ROADMAP.txt).
+
+```bash
+python -m mesa.ingestao && python -m mesa.regras_run   # store: base + regras + fila
+python -m mesa.importar_cache                          # histórico de pareceres (sem LLM)
+python -m mesa.triagem                                 # worker: parecer para cada alerta
+uvicorn mesa.api:app                                   # tela em http://127.0.0.1:8000
+python -m mesa.ciclo --entrada dados/entrada           # base nova: só o delta é reprocessado
+python -m mesa.db                                      # migra um store de versão anterior
+python -m mesa.cenario_isca --semente 7                # cenário de isca plantado, com gabarito
+python -m mesa.cenario_isca --medir 101-120            # acerto da contra-isca contra o gabarito
+```
+
+Com Docker: `docker compose run --rm mesa`, `docker compose run --rm mesa-triagem`,
+`docker compose up api` e, para rodar sozinho a cada hora, `docker compose up -d mesa-ciclo`.
+
+| Caminho | O que é |
+|---|---|
+| `mesa/esquema.sql`, `mesa/db.py` | Store SQLite (esquema v8), migração por versão. Parecer, decisão, trilha e suspeita são append-only por trigger. |
+| `mesa/ingestao.py` | Arquivo → store. Operação corrigida vira versão nova; a anterior fica no histórico. |
+| `mesa/regras_run.py` | Regras sobre o store; execução incremental (só clientes que mudaram). |
+| `mesa/triagem.py` | Worker: reaproveita parecer quando a entrada não mudou (zero chamada de LLM). |
+| `mesa/api.py` | API FastAPI — nenhum cálculo de regra; decisão e trilha numa transação. |
+| `mesa/metricas.py` | Agente × analista, aderência × decisão, tempo de análise medido pela trilha. |
+| `mesa/ciclo.py` | Ingere o que chegou, reavalia o delta, tria — agendável (cron, `--a-cada`). |
+| `mesa/contra_isca.py` | "Caçar o que passou": operações de **outros** clientes ligadas a um caso chamativo — fracionamento distribuído na janela de dias, ou volume que entrou enquanto o caso estava em análise. Cada parte do escore com a sua procedência; o analista assina a suspeita. |
+| `mesa/cenario_isca.py` | Cenário plantado sobre a base real (isca + os dois padrões + ruído), com gabarito — a prova de que a caça acha o que foi plantado, e quanto lixo traz. |
+| `mesa/web/` | A tela, em JavaScript puro, servida pela própria API. |
+
 ## Estrutura
 
 A estrutura obrigatória do enunciado foi seguida à risca. Os arquivos marcados com ➕ são

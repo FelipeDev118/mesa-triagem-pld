@@ -83,7 +83,14 @@ def test_agente_chama_tool_e_produz_parecer_valido(monkeypatch):
 
     assert resultado["erro_parsing"] is None
     assert resultado["parecer"]["nivel_risco"] == "alto"
-    assert resultado["tools_chamadas"] == [{"tool": "historico_cliente", "args": {"cliente_id": CLIENTE_REAL}}]
+    # o payload da ferramenta entra na chamada registrada (passo 1.4 do ROADMAP):
+    # e o que permite reabrir o caso vendo o que o agente viu, nao o que a base
+    # diz hoje. Por isso a asercao confere tool/args e a presenca do payload, em
+    # vez de igualdade exata com um dict de 2 chaves.
+    (chamada,) = resultado["tools_chamadas"]
+    assert chamada["tool"] == "historico_cliente"
+    assert chamada["args"] == {"cliente_id": CLIENTE_REAL}
+    assert chamada["payload"]["cliente_id"] == CLIENTE_REAL
     assert resultado["cache_hit"] is False
 
 

@@ -12,6 +12,30 @@ import pandas as pd
 
 DADOS_PATH = Path(__file__).resolve().parent.parent / "dados" / "dados_nivel_2.json"
 
+# Os limiares das duas regras, num lugar so. Estavam embutidos como numeros
+# magicos dentro de flag_fracionamento() e flag_valor_atipico().
+#
+# O motivo de extrair nao e estetica nem configurabilidade: e AUDITORIA. A Mesa
+# de Triagem grava estes valores junto de cada execucao de regras
+# (execucoes_regras.parametros_json), para que um alerta continue explicavel
+# depois que o limiar mudar. "Por que R$ 50.000?" nao pode depender de alguem
+# fazer arqueologia no git para descobrir o que valia naquele dia.
+#
+# Os valores sao os do enunciado e NAO mudaram nesta extracao - os testes de
+# fronteira em tests/test_dados.py sao a prova disso.
+PARAMETROS_REGRAS = {
+    "frac_min_ops": 3,             # Regra 1: operacoes no mesmo dia
+    "frac_soma_min": 50000,        # Regra 1: soma do dia acima de
+    "frac_max_individual": 20000,  # Regra 1: nenhuma operacao atinge
+    "atipico_min_ops": 4,          # Regra 2: guarda de historico minimo
+    "atipico_fator": 5,            # Regra 2: multiplo da mediana do cliente
+}
+
+# Muda quando a LOGICA das regras mudar (nao quando so um limiar mudar - isso ja
+# fica registrado em parametros_json). Ex.: adicionar janela deslizante na
+# Regra 1 seria r2.
+VERSAO_REGRAS = "r1-2026-09-12"
+
 
 def carregar_e_limpar(path: Path = DADOS_PATH) -> tuple[pd.DataFrame, float]:
     with open(path, encoding="utf-8") as f:
@@ -21,7 +45,13 @@ def carregar_e_limpar(path: Path = DADOS_PATH) -> tuple[pd.DataFrame, float]:
     df = pd.DataFrame(raw["operacoes"])
 
     df = df.drop_duplicates(subset=["id"]).copy()
-    df["data"] = pd.to_datetime(df["data"], errors="coerce")
+    # Formato FIXO (ISO, o da base). Sem ele o pandas adivinha pelo primeiro
+    # elemento via dateutil: num arquivo so com datas brasileiras, "05/03/2026"
+    # virava 3 de MAIO e "13/03/2026" virava invalida - medido. Data fora do
+    # formato vira invalida (data_valida=False, visivel e tratada pelas
+    # regras), nunca uma data errada em silencio. Achado na auditoria da Fase 5,
+    # quando arquivos novos passaram a chegar pelo ciclo.
+    df["data"] = pd.to_datetime(df["data"], format="%Y-%m-%d", errors="coerce")
     df["data_valida"] = df["data"].notna()
     df["valor_brl"] = df.apply(
         lambda r: r["valor"] * taxa if r["moeda"] == "USD" else r["valor"],
@@ -30,47 +60,48 @@ def carregar_e_limpar(path: Path = DADOS_PATH) -> tuple[pd.DataFrame, float]:
     return df, taxa
 
 
-def flag_fracionamento(df: pd.DataFrame) -> pd.DataFrame:
+def flag_fracionamento(df: pd.DataFrame, parametros: dict = PARAMETROS_REGRAS) -> pd.DataFrame:
     elegivel = df[df["data_valida"]]
     grp = elegivel.groupby(["cliente_id", "data"])["valor_brl"]
     candidatos = pd.DataFrame(
         {"soma": grp.sum(), "qtd": grp.count(), "max_individual": grp.max()}
     ).reset_index()
     return candidatos[
-        (candidatos["qtd"] >= 3)
-        & (candidatos["soma"] > 50000)
-        & (candidatos["max_individual"] < 20000)
+        (candidatos["qtd"] >= parametros["frac_min_ops"])
+        & (candidatos["soma"] > parametros["frac_soma_min"])
+        & (candidatos["max_individual"] < parametros["frac_max_individual"])
     ]
 
 
-def datas_fracionamento(df: pd.DataFrame, cliente_id: str) -> list[str]:
+def datas_fracionamento(df: pd.DataFrame, cliente_id: str,
+                        parametros: dict = PARAMETROS_REGRAS) -> list[str]:
     """Quais datas dispararam a Regra 1 para este cliente, em YYYY-MM-DD.
 
     Existe porque aplicar_regras() colapsa o resultado de flag_fracionamento() (que tem
     cliente_id + data + soma + qtd) num booleano por cliente - suficiente para a coluna
     flag_fracionamento do DataFrame, mas insuficiente para o agente investigar o dia
     certo. Reusa flag_fracionamento() em vez de duplicar o calculo do candidato."""
-    candidatos = flag_fracionamento(df)
+    candidatos = flag_fracionamento(df, parametros)
     datas = candidatos.loc[candidatos["cliente_id"] == cliente_id, "data"]
     return sorted(d.strftime("%Y-%m-%d") for d in datas)
 
 
-def flag_valor_atipico(df: pd.DataFrame) -> pd.DataFrame:
+def flag_valor_atipico(df: pd.DataFrame, parametros: dict = PARAMETROS_REGRAS) -> pd.DataFrame:
     contagem = df.groupby("cliente_id")["id"].transform("count")
-    elegivel = df[contagem >= 4].copy()
+    elegivel = df[contagem >= parametros["atipico_min_ops"]].copy()
     mediana = elegivel.groupby("cliente_id")["valor_brl"].transform("median")
-    elegivel["limite_atipico"] = mediana * 5
+    elegivel["limite_atipico"] = mediana * parametros["atipico_fator"]
     elegivel["atipico"] = elegivel["valor_brl"] > elegivel["limite_atipico"]
     return elegivel[["id", "cliente_id", "valor_brl", "limite_atipico", "atipico"]]
 
 
-def aplicar_regras(df: pd.DataFrame) -> pd.DataFrame:
+def aplicar_regras(df: pd.DataFrame, parametros: dict = PARAMETROS_REGRAS) -> pd.DataFrame:
     df = df.copy()
-    fracionamento = flag_fracionamento(df)
+    fracionamento = flag_fracionamento(df, parametros)
     clientes_fracionamento = set(fracionamento["cliente_id"])
     df["flag_fracionamento"] = df["cliente_id"].isin(clientes_fracionamento)
 
-    atipicos = flag_valor_atipico(df)
+    atipicos = flag_valor_atipico(df, parametros)
     df = df.merge(
         atipicos[["id", "atipico"]].rename(columns={"atipico": "flag_valor_atipico"}),
         on="id",

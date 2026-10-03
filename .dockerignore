@@ -6,3 +6,14 @@ __pycache__/
 *.pyc
 .ipynb_checkpoints/
 .git/
+
+# Dado de cliente e estado da Mesa nunca entram na imagem: o store (com parecer,
+# decisao e trilha) e os arquivos que chegam para o ciclo sao montados como
+# volume em runtime (docker-compose.yml). Copiados no build, ficariam gravados
+# nas camadas da imagem - e em quem receber a imagem.
+outputs/mesa.db
+outputs/mesa.db-wal
+outputs/mesa.db-shm
+outputs/mesa.db.ciclo.lock
+outputs/ciclo.log
+dados/entrada/

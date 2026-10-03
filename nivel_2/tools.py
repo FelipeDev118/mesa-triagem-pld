@@ -24,10 +24,30 @@ def _df() -> pd.DataFrame:
     return aplicar_regras(df)
 
 
+# Base injetada por quem roda o agente sobre OUTRA fonte que nao o JSON da
+# entrega - a Mesa de Triagem (mesa/triagem.py) injeta o DataFrame do store.
+# Sem isto as ferramentas liam SEMPRE o JSON: com uma base nova ingerida no
+# store, o agente analisaria dado velho e o hash do parecer (calculado sobre
+# historico_cliente) nao mudaria - parecer antigo reaproveitado em silencio.
+# Injecao, e nao `import mesa` aqui: nivel_2 nao conhece a Mesa.
+_base_injetada: pd.DataFrame | None = None
+
+
+def usar_base(df: pd.DataFrame | None) -> None:
+    """Passa a responder sobre `df` (base limpa, formato de carregar_e_limpar);
+    as regras sao aplicadas aqui, uma vez. `None` volta ao JSON da entrega."""
+    global _base_injetada
+    _base_injetada = None if df is None else aplicar_regras(df)
+
+
+def _base() -> pd.DataFrame:
+    return _df() if _base_injetada is None else _base_injetada
+
+
 def historico_cliente(cliente_id: str) -> dict:
     """Resumo agregado das operações do cliente: volume, contagem, período,
     canais/tipos mais usados e se há flags determinísticas ativas."""
-    df = _df()
+    df = _base()
     sub = df[df["cliente_id"] == cliente_id]
     if sub.empty:
         return {"cliente_id": cliente_id, "erro": "cliente nao encontrado"}
@@ -49,7 +69,7 @@ def historico_cliente(cliente_id: str) -> dict:
 
 def operacoes_do_dia(cliente_id: str, data: str) -> dict:
     """Recorte das operações de um cliente em uma data específica (YYYY-MM-DD)."""
-    df = _df()
+    df = _base()
     alvo = pd.to_datetime(data)
     sub = df[(df["cliente_id"] == cliente_id) & (df["data"] == alvo)]
     ops = sub[["id", "valor_brl", "canal", "tipo", "contraparte"]].to_dict(orient="records")
@@ -64,7 +84,7 @@ def operacoes_do_dia(cliente_id: str, data: str) -> dict:
 
 def perfil_canal(cliente_id: str) -> dict:
     """Distribuição de uso de canais do cliente (contagem e volume por canal)."""
-    df = _df()
+    df = _base()
     sub = df[df["cliente_id"] == cliente_id]
     if sub.empty:
         return {"cliente_id": cliente_id, "erro": "cliente nao encontrado"}

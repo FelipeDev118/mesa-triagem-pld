@@ -1,0 +1,1341 @@
+===============================================================================
+ MESA DE TRIAGEM PLD - ESCADA DE DESENVOLVIMENTO
+===============================================================================
+ Projeto : Desafio Itau -> sistema de triagem para o analista
+ Criado  : 2026-09-12
+ Formato : [ ] pendente   [~] em andamento   [x] concluido   [!] bloqueado
+           Todo passo so vira [x] quando o CRITERIO DE ACEITE passa de verdade,
+           executado e conferido - nao quando o codigo "parece pronto".
+           Essa regra existe por causa da licao registrada em docs/USO_DE_IA.md:
+           afirmacao plausivel nao verificada foi o pior erro do projeto.
+===============================================================================
+
+-------------------------------------------------------------------------------
+ CONTEXTO - DE ONDE PARTIMOS
+-------------------------------------------------------------------------------
+ O que ja existe e funciona (entrega do desafio, 3 niveis + bonus):
+   - camada deterministica em pandas, testada (20 testes de limite)
+   - 3 ferramentas, agente com function calling, servidor MCP
+   - cache por hash, observabilidade de custo, verificacao de aderencia
+   - 30/30 respostas validas | 76,7% concordancia | 28/30 fundamentados
+
+ O buraco que este roadmap fecha:
+   tudo isso e um pipeline em lote que produz ARQUIVOS. Nao existe ponto de
+   entrada para um analista. O caso precisa deixar de ser uma linha de CSV e
+   virar um objeto com estado, dono, evidencia rastreavel e decisao registrada.
+
+ PRINCIPIOS NAO-NEGOCIAVEIS (valem para todas as fases):
+   1. O sistema tria, o humano decide. Nenhum reporte automatico.
+   2. Nenhum numero exibido sem procedencia. Aderencia marca, nao esconde.
+   3. Parecer e registro datado e imutavel, nunca funcao recalculavel.
+   4. Calculo em pandas, interpretacao no LLM. Sem excecao.
+   5. Fronteira do LLM isolada atras de interface (LGPD / modelo no perimetro).
+
+-------------------------------------------------------------------------------
+ FASE 0 - STORE DOS FATOS E DOS ALERTAS
+ Objetivo: a base sai do JSON relido a cada processo e vira store indexado.
+ Portao  : verificar_ambiente.py reproduz os 8 numeros + top 10 nominal.
+-------------------------------------------------------------------------------
+
+ [x] 0.1  mesa/db.py + mesa/esquema.sql (tabelas da Fase 0)
+          - conexao, PRAGMA foreign_keys=ON, journal WAL, migracoes
+          - tabelas: lotes_ingestao, operacoes, execucoes_regras,
+                     sinalizacoes, alertas
+          ACEITE: pytest cria e derruba o banco em tmp_path; FK ativas.
+          FEITO 2026-09-12: 6 testes em tests/test_mesa_db.py. FK barra insert
+          invalido de verdade (nao so o PRAGMA responder 1), CHECK de estado
+          rejeita enum invalido, banco de versao futura e recusado.
+          Efeito colateral corrigido: conftest.py nao punha a RAIZ no sys.path,
+          entao `from mesa import ...` so funcionava via `python -m pytest`.
+
+ [x] 0.2  mesa/ingestao.py - JSON -> lotes_ingestao + operacoes
+          - taxa de cambio e propriedade do LOTE, nao constante global
+          - valor_brl derivado na ingestao e materializado ao lado do bruto
+          - a ingestao NAO reimplementa a limpeza: chama carregar_e_limpar() da
+            entrega, ja coberta por 20 testes de limite. Duas verdades sobre "a
+            base tratada" seria a receita para uma divergir em silencio.
+          ACEITE (CORRIGIDO): operacoes = 317 | duplicatas_ignoradas = 5
+                  data IS NULL em 6 (nao 7!) | USD em 7 com valor_brl = valor*5.4
+          FEITO 2026-09-12: 8 testes em tests/test_mesa_ingestao.py.
+
+          >>> ACHADO que corrigiu o proprio criterio de aceite <<<
+          Eu tinha escrito "data IS NULL em 7". A ingestao deu 6 e a suspeita
+          inicial era bug. Nao era: verificar_ambiente.py conta as datas nulas no
+          arquivo BRUTO (322 linhas) e uma das 5 duplicatas removidas tinha data
+          nula - logo 7 no arquivo, 6 na tabela. Os dois numeros estao certos,
+          sobre populacoes diferentes; o criterio e que estava errado.
+          CONSEQUENCIA DE DESENHO: as estatisticas do arquivo bruto nao existem
+          em lugar nenhum depois da limpeza, entao o passo 0.8 nao teria como
+          reproduzi-las lendo so o banco. Adicionadas as colunas
+          lotes_ingestao.datas_nulas_brutas e .operacoes_usd_brutas
+          (esquema v1 -> v2). Sem esse tropeco, o 0.8 quebraria mais tarde e mais
+          caro.
+
+ [x] 0.3  Idempotencia da reingestao (INSERT OR IGNORE)
+          ACEITE: rodar 2x nao muda a contagem; 2o lote registra 322 ignoradas.
+          FEITO 2026-09-12: verificado (317 -> 0 inseridas na 2a). O lote da 2a
+          tentativa FICA registrado - "alguem tentou reingerir" e um fato.
+          A divida 5.2 (arquivo corrigido nao atualiza) esta fixada como teste,
+          nao so como comentario: test_arquivo_corrigido_nao_atualiza_operacao.
+
+ [x] 0.4  mesa/repositorio.py - operacoes_df() devolve o mesmo DataFrame
+          ACEITE: assert_frame_equal contra carregar_e_limpar()[0]
+                  (mesmas colunas, mesmos dtypes, mesmos valores).
+          FEITO 2026-09-12: 8 testes em tests/test_mesa_repositorio.py.
+          - unica diferenca aceita: o INDICE (o JSON tem buracos das 5 dedups; o
+            store nao sabe a posicao original). Nao afeta nada: as regras agregam
+            por cliente/data e o unico merge e por "id".
+          - ORDER BY rowid preserva a ordem do arquivo. Nao e estetica:
+            value_counts() em historico_cliente() desempata por ordem de
+            aparicao -> entra no prompt -> entra no hash do parecer.
+          - aplicar_regras() e ranking_clientes_sinalizados() dao resultado
+            IDENTICO pelas duas vias (testado, nao suposto).
+          - EXPLAIN QUERY PLAN confirma que o filtro por cliente USA o indice:
+            indice existir no schema nao garante que o planner o escolha.
+
+ [x] 0.5  Extrair PARAMETROS_REGRAS em nivel_2/dados.py (5 limiares hardcoded:
+          frac_min_ops=3, frac_soma_min=50000, frac_max_individual=20000,
+          atipico_min_ops=4, atipico_fator=5)
+          ACEITE: testes de limite existentes passam SEM alteracao.
+          FEITO 2026-09-12: os 23 testes de dados.py passaram sem uma edicao.
+          Tambem entrou VERSAO_REGRAS='r1-2026-09-12' (muda quando a LOGICA
+          mudar; limiar novo ja fica gravado em parametros_json).
+          +3 testes novos: um congela os valores do enunciado, dois provam que
+          a parametrizacao e REAL (mudar o limiar muda o resultado) - extrair
+          para constante nao vale nada se a funcao seguir decidindo pelo numero
+          magico.
+          TROPECO: escrevi um dos testes afrouxando frac_min_ops para 2 e ele
+          falhou. Com max_individual < 20000, duas operacoes NUNCA somam mais de
+          50000 - o cenario e impossivel por construcao. Refeito apertando o
+          limiar (3 ops que disparam, min_ops=4 que nao) e o motivo ficou no
+          comentario do teste.
+
+ [x] 0.6  mesa/regras_run.py -> execucoes_regras + sinalizacoes
+          - parametros_json gravado: alerta antigo continua explicavel
+          ACEITE: 4 clientes com fracionamento | 21 sinalizacoes de atipico.
+          FEITO 2026-09-12: 317 operacoes | 4 clientes frac | 21 atipicas |
+          25 sinalizacoes (4 de fracionamento por (cliente,dia) + 21 de valor).
+          - fracionamento grava data e operacao_id NULL; valor atipico o
+            inverso. A regra e por DIA - apontar uma operacao unica seria mentir
+            sobre o que disparou.
+          - datas_fracionamento_do_store() vira SELECT no lugar de reprocessar
+            flag_fracionamento() inteira. Testado contra o calculo original:
+            resultado identico para todos os clientes com a flag.
+          - duas execucoes com parametros diferentes COEXISTEM (a antiga nao e
+            sobrescrita) - e o que torna parametros_json util.
+
+ [x] 0.7  Materializar alertas (17 origem='regra' + 13 origem='controle')
+          ACEITE: nivel_risco_regra bate 30/30 com o
+                  nivel_risco_esperado_regra de confronto_regra_vs_agente.csv.
+          FEITO 2026-09-12: 17 + 13 = 30, e os 30 niveis batem com o CSV
+          commitado da entrega. A fonte da verdade e o CSV, nao um numero
+          recalculado aqui - recalcular com o mesmo codigo provaria so que o
+          codigo concorda consigo mesmo.
+          nivel_risco_esperado() e IMPORTADO de confronto.py, nao reescrito: se
+          o criterio mudar, muda nos dois lugares de uma vez.
+          A fila (ORDER BY total_sinalizacoes DESC, volume DESC) sai na mesma
+          ordem de ranking_clientes_sinalizados() - testado.
+
+ [x] 0.8  verificar_ambiente.py --store  <<< PORTAO DA FASE 0 >>>
+          ACEITE: os 8 numeros identicos E o top 10 nominal na mesma ordem.
+          FEITO 2026-09-12: PASSOU. 8/8 + top 10 nominal na mesma ordem, lendo
+          SO o banco. Os dois modos (--store e o original) comparam contra o
+          mesmo ESPERADO e dao o mesmo dict - testado.
+          O modo --store NAO recalcula regra: le o que ficou GRAVADO, que e o
+          que a Fase 1 vai consumir. Recalcular provaria so autoconsistencia.
+          Recusa (em vez de reprovar) quando a ultima execucao usou parametros
+          diferentes dos da entrega: seria falhar pelo motivo errado.
+          Novo servico no docker-compose: `docker compose run --rm mesa`
+          (ingestao + regras + verificacao, sem chave e sem LLM).
+
+ ===> FASE 0 CONCLUIDA em 2026-09-12. Suite: 87 testes verdes. <===
+
+-------------------------------------------------------------------------------
+ FASE 1 - PARECER COMO REGISTRO, NAO COMO CACHE
+ Objetivo: substituir cache_parecer.py por log append-only com evidencia.
+-------------------------------------------------------------------------------
+
+ [x] 1.1  Tabelas da Fase 1 + triggers de imutabilidade
+          ACEITE: UPDATE e DELETE em pareceres levantam IntegrityError no teste.
+          FEITO 2026-09-12: 6 testes. O append-only e invariante do SCHEMA, nao
+          convencao de codigo - uma regra que depende de todo mundo lembrar dela
+          nao e regra, e esperanca.
+          alerta_id NULLABLE de proposito: rodar o agente fora da fila (o
+          `python nivel_2/agente.py` da entrega) produz parecer legitimo sem
+          alerta. Exigir o vinculo faria a entrega parar de rodar.
+
+ [x] 1.2  mesa/pareceres.py com a MESMA interface de CacheParecer
+          ACEITE: os 4 testes de tests/test_agente.py passam sem edicao. OK.
+          FEITO 2026-09-12: a mudanca em agente.py foi trocar o tipo concreto
+          CacheParecer por um Protocol (CacheDeParecer). Direcao da dependencia:
+          nivel_2/ NAO pode importar mesa/ - a camada de sistema conhece a
+          entrega, nunca o contrario.
+          Teste lado a lado: os campos devolvidos pelo repositorio sao os mesmos
+          do cache antigo, campo a campo. Se algum sumisse na travessia, quem
+          consome quebraria em silencio.
+
+ [x] 1.3  Importar os 50 registros de outputs/cache_pareceres.json
+          ACEITE: 50 linhas, criado_em marcado como importado, 0 chamadas. OK.
+          DECISAO: o cache nao guarda QUANDO cada parecer foi gerado. criado_em
+          recebe o mtime do arquivo e a linha leva origem_registro=
+          'importado_cache' (esquema v3 -> v4). Um timestamp inferido que se
+          passe por observado e pior que a ausencia dele.
+
+ [x] 1.4  agente.py guarda o payload da ferramenta; gravar evidencias
+          FEITO 2026-09-12: aplicado tambem em nivel_3/agente_mcp.py, pelo mesmo
+          motivo. 1 teste da entrega precisou mudar (test_agente comparava
+          tools_chamadas por igualdade exata com um dict de 2 chaves) - mudanca
+          legitima de contrato, nao conserto de teste quebrado.
+
+ [x] 1.5  Reaproveitamento grava linha nova com reaproveitado_de
+          ACEITE: 30 alertas triados com 0 chamadas de API, e 30 pareceres. OK.
+          >>> BUG ENCONTRADO POR TESTE VERMELHO <<<
+          salvar() resolvia alerta_id automaticamente para o alerta mais recente
+          do cliente. Na importacao isso amarrava os 50 pareceres historicos aos
+          alertas de HOJE - e ai o worker via "este alerta ja tem parecer" e
+          pulava o reaproveitamento, o mecanismo que este passo existe para
+          criar. Corrigido com vincular_alerta=False na importacao: aqueles
+          pareceres sao anteriores aos alertas, e antedatar o vinculo seria
+          mentir sobre quando o caso foi triado.
+
+ [x] 1.6  Persistir Coletor -> chamadas_llm; gravar aderencia
+          ACEITE: 28/30 fundamentados. OK - mesmos 2 casos da entrega
+          (CLI-028 alucinacao, CLI-001 tem flag e nao cita numero).
+          _exportar_custo() reconstroi o Coletor e reusa o resumo() dele em vez
+          de reimplementar as medias em SQL - duas versoes do mesmo numero e
+          como duas verdades comecam.
+
+ [x] 1.7  mesa/triagem.py - worker que consome a fila (novo -> triado)
+          ACEITE: rodar 2x nao reprocessa; interrupcao nao perde nem duplica. OK.
+          A retomada nao vem de transacao esperta: o worker checa se o alerta ja
+          tem parecer antes de chamar o LLM. Um kill -9 custa, no maximo, o
+          alerta em voo. Testado matando o worker DEPOIS de gravar e ANTES de
+          concluir - o pior momento possivel.
+          'triado' != 'concluido': quem conclui um caso e o analista (Fase 4).
+          TROPECO: a 1a versao do teste supos que `limite` contava os mesmos 5
+          alertas da 1a passada. Conta a fila RESTANTE. O codigo estava certo.
+
+ [x] 1.8  outputs/ vira export do store (mesa/exportar.py + confronto --store)
+          ACEITE: confronto_resumo.json reproduz 76,67% / 23 / 7. OK, identico.
+          FEITO 2026-09-12: o CSV gerado a partir do store ficou byte a byte
+          igual ao commitado, depois de acrescentar cliente_id como desempate
+          na ordenacao (a fila nao pode reordenar entre leituras - SQL nao
+          garante estabilidade de sort onde o pandas garante).
+          Servicos novos: `docker compose run --rm mesa` (store do zero, sem
+          chave) e `mesa-triagem` (worker + export).
+
+          >>> ACHADO: dois artefatos commitados da entrega discordam entre si <<<
+          outputs/pareceres_lote.json diz 21/30 fundamentados; 
+          outputs/aderencia_pareceres.csv diz 28/30 - ambos do commit d490b00.
+          Recomputando com o codigo atual: 28/30. Ou seja, o bloco "aderencia"
+          dentro do JSON e ANTERIOR a ultima correcao do verificador (os 6 casos
+          de "cliente sem flag nao tem o que citar" + CLI-007); o CSV foi
+          regenerado e o JSON nao. O README e o CSV estao certos.
+          PENDENTE DE DECISAO: regerar outputs/pareceres_lote.json a partir do
+          store (`python -m mesa.exportar`) corrige a inconsistencia, mas
+          sobrescreve um artefato commitado da entrega - decisao do Felipe.
+
+ ===> FASE 1 CONCLUIDA em 2026-09-12. Suite: 119 testes verdes. <===
+
+-------------------------------------------------------------------------------
+ FASE 2 - API (FastAPI)
+ Objetivo: expor o store para a tela. A API NAO calcula nada - le o que a Fase 0
+ e a Fase 1 gravaram. Toda regra de negocio ja existe; aqui e so contrato HTTP.
+ Portao: um teste de contrato por endpoint (TestClient), e a fila devolvida pela
+ API na MESMA ordem de ranking_clientes_sinalizados().
+-------------------------------------------------------------------------------
+ Convencoes de toda a fase:
+   - somente leitura, exceto 2.4 (transicao de estado) e o que a Fase 4 somar
+   - dinheiro em centavos NAO: valor_brl float, como esta no store; a conversao
+     para "R$ 1.234,56" e da tela, nao da API
+   - datas ISO-8601, como no store
+   - erro = JSON {detail: "..."} com status HTTP correto (404 alerta inexistente,
+     409 transicao de estado invalida) - nunca 200 com corpo de erro dentro
+   - a API abre UMA conexao por request (SQLite + WAL aguenta; ver mesa/db.py)
+
+ [x] 2.0  mesa/api.py - app FastAPI + dependencia de conexao + CORS local
+          - `uvicorn mesa.api:app --reload`; servico no docker-compose
+          - fastapi + uvicorn fixados no requirements.txt (a versao importa:
+            ver a licao do pacote mcp 1.x -> 2.x em REPRODUTIBILIDADE.md)
+          ACEITE: GET /saude devolve 200 com versao do esquema e contagens
+                  (operacoes, alertas, pareceres) - prova que a API le o store.
+
+          FEITO 2026-09-26: fastapi 0.141.1 fixado (+ uvicorn e httpx, que ja
+          vinham transitivos do mcp mas agora sao dependencia DIRETA). Instalar
+          nao moveu starlette nem pydantic - conferido com --dry-run antes.
+          Servico `api` no compose, porta publicada SO em 127.0.0.1 do host.
+          /saude responde versao 4, 317 operacoes, 30 alertas, 80 pareceres.
+          A API RECUSA (503) store inexistente em vez de deixar conectar() criar
+          um banco vazio - a tela mostraria "0 casos" como se fosse verdade.
+          E confere a versao do esquema sem aplicar: um GET nao escreve (testado:
+          o arquivo sai byte a byte intocado depois de 4 rotas de leitura).
+
+          >>> BUG REAL MEDIDO: 93% das requisicoes concorrentes davam 500 <<<
+          O FastAPI abre a conexao numa thread do pool, roda o endpoint em outra
+          e fecha numa terceira; o sqlite3 recusa isso por padrao. O TestClient
+          SEQUENCIAL passou - daria falsa confianca. Um uvicorn real com 300
+          requisicoes concorrentes: 278 deram 500. Correcao: conectar() ganhou
+          check_same_thread (so a API desliga; cada requisicao tem conexao
+          propria, que troca de thread mas nunca e usada por duas ao mesmo tempo).
+          Regressao: test_leituras_concorrentes_nao_quebram sobe um uvicorn de
+          verdade. PROVADO QUE MORDE: reintroduzido o bug, o teste da exatamente
+          {200: 22, 500: 278}.
+ [x] 2.1  GET /fila
+          Query: ?estado=novo|triado|em_analise|concluido (default: todos)
+                 ?origem=regra|controle  (default: regra - a fila do ANALISTA
+                                          nao mostra caso sem sinalizacao)
+                 ?limite=&cursor=        (paginacao; 50 por pagina)
+          Item: {alerta_id, cliente_id, estado, origem, nivel_risco_regra,
+                 nivel_risco_agente, concorda (bool|null), total_sinalizacoes,
+                 volume_total_brl, qtd_operacoes, fundamentado (bool|null),
+                 analista_id, criado_em}
+          - `concorda` e `fundamentado` vem NULL quando ainda nao ha parecer:
+            a fila precisa distinguir "concorda" de "ainda nao triado", que foi
+            exatamente a confusao que confronto.py teve que desfazer (respostas
+            validas vs concordancia - DECISOES.md)
+          ACEITE: ordem identica a ranking_clientes_sinalizados(); 17 itens com
+                  origem=regra e 30 com origem=todos.
+
+          FEITO 2026-09-26: ordem identica ao ranking; 17 / 30 / 13 conferidos.
+          `concorda` reproduz os 23/30 do confronto_resumo.json e `fundamentado`
+          os 28/30 - a API REUSA _normalizar_nivel() do confronto.py.
+          Sem parecer: concorda/fundamentado/nivel_risco_agente = null (testado
+          contra um store sem triagem).
+          DECISAO: cursor por CHAVE (a tripla de ordenacao), nao por offset. A
+          fila muda enquanto e lida; com offset, um caso pego por outro analista
+          entre duas paginas desloca tudo e um item e PULADO. Ha teste que muda
+          o estado de um caso entre a pagina 1 e a 2 e confere que nada se perde.
+ [x] 2.2  GET /alertas/{id}
+          Caso completo, o que a tela precisa numa requisicao so:
+          {alerta: {...}, sinalizacoes: [{regra, operacao_id, data, detalhe}],
+           parecer: {nivel_risco, tipologia_suspeita, red_flags[], justificativa,
+                     modelo, versao_prompt, criado_em, reaproveitado_de},
+           aderencia: {fundamentado, motivo, valores_confirmados[],
+                       valores_nao_encontrados[], atipicos_incorretos[]},
+           operacoes: [{id, data, valor_brl, canal, tipo, contraparte,
+                        flag_valor_atipico}],
+           historico_parecer: [{parecer_id, nivel_risco, criado_em}]}
+          - `historico_parecer` e o append-only ficando VISIVEL: se o parecer
+            deste cliente ja foi outro, o analista ve. E o motivo da Fase 1.
+          - `operacoes` marcadas com a flag: e o que liga numero -> fonte na tela
+          ACEITE: 404 em alerta inexistente; um caso com fracionamento traz a
+                  sinalizacao com a data que disparou.
+
+          FEITO 2026-09-26: 404 com {detail} exato; caso de fracionamento traz as
+          datas que dispararam (conferidas contra datas_fracionamento_do_store).
+          As marcas das operacoes vem de `sinalizacoes` GRAVADAS, nao de recalculo
+          - testado que coincidem uma a uma.
+          O caso CLI-028 da apresentacao sai completo da API: aderencia false,
+          atipicos_incorretos=[6913.84], e a operacao citada com flag false.
+          ACRESCIMOS ao spec (baratos, e a Fase 3 precisa):
+            - operacoes[].em_dia_de_fracionamento (idem, vindo de sinalizacoes)
+            - historico_parecer[] com origem_registro e reaproveitado_de: sem
+              eles, um parecer importado (timestamp INFERIDO) seria
+              indistinguivel de um gerado (timestamp OBSERVADO) - a distincao
+              que a Fase 1 fez questao de gravar.
+          Operacao sem data vai para o FIM (o SQLite poe NULL no topo em ASC).
+ [x] 2.3  GET /alertas/{id}/evidencias
+          [{ordem, tool, args, payload}] - o payload como o AGENTE viu.
+          ACEITE: alerta reaproveitado tambem devolve evidencia (a copia carrega
+                  as linhas junto - ver 1.5); alerta sem parecer devolve [].
+
+          FEITO 2026-09-26: alerta reaproveitado devolve a evidencia copiada no
+          passo 1.5; alerta sem parecer devolve [] (existe, so nao foi triado -
+          404 fica para o que nao existe).
+          FATO DO HISTORICO, NAO BUG: as evidencias importadas tem payload null.
+          O cache antigo nunca guardou o retorno das ferramentas (so a partir do
+          1.4). A API devolve null em vez de inventar - e a tela vai precisar
+          dizer isso ao analista (ver 3.4).
+ [x] 2.4  POST /alertas/{id}/estado   {estado, analista_id}
+          Transicoes permitidas (as unicas):
+            novo       -> em_analise        (analista pegou o caso)
+            triado     -> em_analise
+            em_analise -> concluido         (so via Fase 4, com decisao junto)
+            em_analise -> triado            (devolveu para a fila)
+          - 409 em qualquer outra transicao, com a lista do que era permitido
+          - o worker continua sendo o unico a escrever 'triado' a partir de
+            'novo'; a API nao duplica esse caminho
+          ACEITE: novo->concluido devolve 409 e NAO altera o estado.
+
+          FEITO 2026-09-26: novo->concluido = 409 e estado intacto.
+          >>> DUAS AMBIGUIDADES DO SPEC, resolvidas antes de codar <<<
+          (a) 2.4 pedia analista_id no CORPO; 2.5 pedia no header X-Analista.
+              Duas fontes para o mesmo fato. Fica so o header; o corpo leva so
+              {estado}.
+          (b) em_analise->concluido estava na lista de permitidas, mas anotado
+              "so via Fase 4, com decisao junto". Liberar agora permitiria
+              fechar um caso sem registro do que o analista decidiu. Nesta fase
+              devolve 409 dizendo que exige a Fase 4. A Fase 4 abre a transicao
+              JUNTO com a tabela decisoes, nunca antes.
+          DECISAO DE CONCORRENCIA (nao estava no spec): dois analistas clicando
+          "pegar caso" ao mesmo tempo. UPDATE ... WHERE id=? AND estado=<lido>
+          (compare-and-set) - o banco garante que so um vence.
+          >>> ACHADO: o teste de corrida por carga e PROBABILISTICO <<<
+          Reintroduzido o UPDATE sem condicao, o teste com 20 analistas
+          simultaneos falhou em 2 de 3 execucoes - PASSOU na terceira com o bug
+          presente. Detector que falha 1 vez em 3 nao protege. Criado um teste
+          DETERMINISTICO que forca a intercalacao exata (le 'triado', outro
+          analista escreve no meio, entao o UPDATE roda): falha 3 de 3 com o bug,
+          passa com a correcao. O de carga ficou, declarado como probabilistico.
+ [x] 2.5  Identificacao do analista
+          - header X-Analista (string) por enquanto; sem senha, sem sessao
+          - obrigatorio em 2.4, ignorado nos GETs
+          - RAZAO de nao fazer auth de verdade agora: autenticacao mal feita e
+            pior que ausencia declarada dela. A API sobe em localhost, sem dado
+            real (ver divida LGPD). Auth entra junto com o primeiro deploy fora
+            da maquina, nunca antes.
+          ACEITE: POST sem X-Analista devolve 400; com header, grava analista_id.
+
+          FEITO 2026-09-26: sem header = 400; header em branco = 400; GETs nao
+          exigem. Pegar o caso grava o analista; devolver para a fila libera.
+          Caso ja em_analise nao pode ser pego por outro (409) - sem isso, um
+          segundo analista "roubaria" o caso em silencio.
+ [x] 2.6  GET /execucoes  e  GET /execucoes/{id}
+          Lista as execucoes de regras com parametros_json e contagens.
+          Existe para a pergunta de auditoria: "com que limiar este alerta
+          nasceu?" - o passo 0.5 gravou o dado, aqui ele fica alcancavel.
+          ACEITE: devolve os parametros da execucao, nao os do codigo atual.
+
+          FEITO 2026-09-26: roda uma 2a execucao com atipico_fator=10 e a API
+          devolve [10, 5] - o que cada execucao USOU, nao o PARAMETROS_REGRAS
+          de hoje. Traz tambem alertas_regra/alertas_controle por execucao.
+
+ ===> FASE 2 CONCLUIDA em 2026-09-26. Suite: 166 testes verdes (+45). <===
+ Comando validado fora dos testes: `uvicorn mesa.api:app` sobe com as 7 rotas
+ e o /docs interativo (OpenAPI gerado dos modelos Pydantic - os modelos SAO o
+ contrato que a Fase 3 consome).
+-------------------------------------------------------------------------------
+ FASE 3 - TELA DE CASO (o diferencial)
+ STACK DECIDIDA (2026-09-12): JavaScript VANILLA. Sem framework, sem build step,
+ sem node_modules. HTML + CSS + fetch() contra a API da Fase 2. A tela e uma
+ fila e um painel de caso - nao ha estado de UI que justifique React aqui, e
+ zero build combina com o resto do projeto.
+ Portao: o caso CLI-028 renderizado com o R$ 6.913,84 marcado em vermelho e a
+ operacao-fonte ao lado - o slide da apresentacao, funcionando de verdade.
+-------------------------------------------------------------------------------
+ Convencoes de toda a fase:
+   - a tela NAO calcula regra nenhuma: tudo que ela marca vem da API, que vem
+     do store. Formatar "R$ 1.234,56" e a UNICA transformacao permitida aqui
+     (Intl.NumberFormat('pt-BR'), nunca string montada a mao)
+   - servida pela PROPRIA API (StaticFiles em /app) - mesma origem, sem CORS,
+     sem um segundo servidor para subir. O CORS da Fase 2 continua para quem
+     preferir abrir o HTML de outro lugar
+   - arquivos: mesa/web/index.html, mesa/web/app.js, mesa/web/estilo.css
+   - sem dependencia externa em runtime (nada de CDN): a ferramenta tem que
+     abrir numa rede de banco sem internet
+   - testes: a logica pura de app.js (ligar numero -> operacao) em funcoes
+     exportaveis, testadas com node --test SE node existir na maquina; a
+     integracao tela+API conferida no navegador do app (Browser pane)
+
+ [x] 3.0  API serve a tela: StaticFiles em /app + redirect de / para /app
+          ACEITE: GET /app devolve o index.html; /docs e as rotas da Fase 2
+                  continuam intactas (os 45 testes da API seguem verdes).
+
+          FEITO 2026-09-26: StaticFiles em /app (montado por ULTIMO, para nao
+          sombrear rota) + redirect de /. Testado: /docs e as 7 rotas intactas,
+          app.js/logica.js servidos com tipo javascript (modulo ES com tipo
+          errado e recusado em silencio pelo navegador - tela em branco).
+          Comando: `.venv/bin/uvicorn mesa.api:app` e abrir http://localhost:8000
+          .claude/launch.json criado para o preview, COM --reload - ver 3.5.
+ [x] 3.1  Fila navegavel
+          - consome GET /fila; filtros de estado e origem na propria tela
+          - cada linha: cliente, nivel regra x agente, chip de concorda/diverge,
+            chip de fundamentado, estado, dono
+          - "ainda nao triado" com visual PROPRIO, distinto de "diverge" - a
+            mesma distincao que a API faz com null (2.1)
+          - paginacao pelo proximo_cursor, nunca por numero de pagina
+          ACEITE: 17 linhas na ordem do ranking; trocar para "todos" mostra 30.
+
+          FEITO 2026-09-26: 17 linhas na ordem do ranking; "todos" = 30.
+          Borda lateral codifica a situacao (diverge / nao triado tracejado),
+          para a fila ser lida de relance. "nao triado" tem chip proprio, sem
+          cor de alerta. Paginacao por "Carregar mais" com o proximo_cursor.
+          Rota por hash (#/alerta/N): recarregar mantem o caso aberto.
+ [x] 3.2  Parecer com CADA numero ligado a sua operacao-fonte
+          - o texto da justificativa e percorrido e cada valor em R$ vira um
+            elemento clicavel que destaca a operacao/agregado correspondente
+          - a CORRESPONDENCIA vem de aderencia.valores_confirmados (que ja traz
+            {valor, fonte}) - a tela NAO reimplementa o regex do verificador.
+            Se precisar localizar o valor no texto, usa o numero ja confirmado
+            pela API, nao uma extracao propria
+          RISCO CONHECIDO: o verificador aceita formatos BR, US, "k" e "BRL"
+          (verificacao_aderencia.py). Localizar esses formatos no texto na tela
+          e uma segunda implementacao do parser. Alternativa a decidir no 3.2:
+          a API devolver as POSICOES (inicio/fim) de cada valor no texto, ja
+          calculadas pelo verificador - um parser so, em Python.
+          ACEITE: no CLI-014, clicar no valor mediano destaca "mediana do
+                  cliente", nao uma operacao (o bug que o verificador ja teve).
+
+          FEITO 2026-09-26. >>> DECISAO EM ABERTO RESOLVIDA: opcao B <<<
+          O verificador (nivel_2/verificacao_aderencia.py) passou a gravar as
+          MARCAS - posicao de cada valor no texto + classe + fonte - na mesma
+          execucao que classifica. Coluna aderencia.marcas_json (esquema v4->v5,
+          store reconstruido: mesmo 28/30, zero chamada de API). A API so le; a
+          tela so quebra o texto nas posicoes. UM parser, em Python.
+          extrair_valores() manteve o contrato exato (12 testes intocados); a
+          versao com posicao e interna (_extrair_com_posicao).
+          Conferido em formatos reais: BR, US (R$71,297.68), "k" (faixa
+          R$14.3k-R$19.4k vira limiar) e a mediana.
+          ACEITE COM A ARMADILHA PRESENTE: no CLI-014 existe a OP-00127 com o
+          valor EXATO da mediana (R$ 2.308,41, a operacao do meio de 11). Clicar
+          na mediana destaca so "mediana do cliente" - nao a OP-00127.
+          Guarda: teste que falha se aparecer regex de R$ na tela.
+          SEGURANCA: a justificativa e texto de LLM - nada da API entra como
+          HTML (so nos de texto). Guarda: teste que falha com innerHTML/
+          outerHTML/insertAdjacentHTML/document.write no codigo da tela.
+ [x] 3.3  Numero nao confirmado marcado em vermelho
+          - valores_nao_encontrados e atipicos_incorretos com marca propria e
+            uma frase dizendo POR QUE ("existe na base, mas nao e uma das
+            operacoes sinalizadas")
+          - a marca nao esconde o parecer: principio 2 do roadmap
+          ACEITE: CLI-028 com R$ 6.913,84 em vermelho e a explicacao ao lado;
+                  CLI-001 (flag ativa, nenhum numero citado) com aviso proprio.
+
+          FEITO 2026-09-26: CLI-028 com R$6.913,84 em vermelho e aviso fixo
+          dizendo POR QUE (existe - OP-00269 -, mas nao e sinalizada). CLI-001
+          (flag ativa, nada citado) com aviso proprio usando o motivo gravado.
+          Visto no navegador e corrigido: clicar num numero com problema
+          repetia, palavra por palavra, o aviso vermelho logo abaixo. Agora a
+          explicacao ao clicar so aparece para os numeros que conferem.
+ [x] 3.4  Painel de evidencia lado a lado com o texto
+          - operacoes do cliente com flag_valor_atipico e
+            em_dia_de_fracionamento visiveis
+          - sinalizacoes com o detalhe (soma do dia, limite atipico)
+          - evidencias das ferramentas; quando o payload e null (pareceres
+            importados, anteriores ao passo 1.4), DIZER isso em vez de mostrar
+            vazio: "o registro deste parecer nao guardou o retorno das
+            ferramentas"
+          - historico_parecer com importado x gerado distinguiveis
+          ACEITE: CLI-014 mostra as 4 versoes do historico, as 3 importadas
+                  marcadas como tal.
+
+          FEITO 2026-09-26: CLI-014 mostra as 4 versoes do historico, as 3
+          importadas marcadas "data inferida" (a copia atual tem data
+          OBSERVADA, a do vinculo - numa trilha de auditoria as duas nao podem
+          parecer iguais). Evidencia com payload null DIZ isso ao analista.
+          Clicar num valor leva a linha de origem (operacao, dia, canal) ou ao
+          agregado (media/mediana/volume). Agregados NAO sao calculados na
+          tela: volume vem do alerta; media/mediana so aparecem quando citadas,
+          com o valor que o verificador conferiu.
+          >>> BUG VISUAL MEDIDO a 1440px <<<
+          A coluna de evidencias (546px) transbordava: a tabela exige 608px e,
+          como item de grid tem min-width:auto, o bloco crescia para fora em vez
+          de a tabela rolar por dentro. Corrigido (minmax(0,1fr) + min-width:0).
+          Conferido tambem: tema claro e escuro, e 400px sem nada alem da borda.
+ [x] 3.5  Pegar / devolver caso pela tela
+          - botoes que chamam POST /alertas/{id}/estado com X-Analista
+          - nome do analista pedido uma vez e guardado em localStorage
+          - 409 mostrado com a mensagem da API (ela ja diz o que era permitido)
+          - SEM botao de concluir: isso e Fase 4
+          ACEITE: pegar um caso na tela, recarregar, o dono continua la; dois
+                  navegadores tentando pegar o mesmo caso - o segundo ve o 409.
+
+          FEITO 2026-09-26: sem nome = aviso e estado intacto; com nome = caso
+          com o analista; recarregar mantem dono e nome (localStorage com
+          try/catch). Sem botao de concluir - uma nota diz que e a Fase 4.
+          Tela desatualizada (outro analista pegou antes): 409 com "ja esta em
+          analise com bruno.lima" e a tela se atualiza sozinha.
+          >>> BRECHA ENCONTRADA AO PENSAR NO FLUXO: regra nova na API <<<
+          Qualquer analista podia DEVOLVER um caso em analise por outro. Agora
+          so o dono devolve (409 dizendo com quem esta). O compare-and-set
+          passou a incluir o dono lido (`analista_id IS ?`). Nao e controle de
+          acesso (X-Analista e identificacao) - impede interferencia por engano.
+          >>> QUASE FALSO NEGATIVO <<<
+          O primeiro teste no navegador mostrou a Ana devolvendo o caso do Bruno
+          - com a regra ja escrita e os testes da API verdes. O servidor do
+          preview tinha subido ANTES da regra, sem --reload: o navegador estava
+          validando codigo velho. launch.json agora usa --reload, e o fluxo
+          inteiro foi refeito com o servidor reiniciado.
+          Mensagens de 409 passaram a nomear o caso como o analista conhece
+          (CLI-028), nao pelo id interno do alerta.
+
+ ===> FASE 3 CONCLUIDA em 2026-09-26. Suite: 185 testes pytest + 13 do Node
+      (o pytest roda os do Node tambem). <===
+ POLIMENTO ANOTADO (nao bloqueia): as mensagens de erro da API sao ASCII sem
+ acento, como todo o codigo Python do projeto; na tela aparecem como
+ "ja esta em analise". Acentuar e mudanca de contrato (ha testes com a string
+ exata) - fazer de uma vez, junto com a Fase 4.
+-------------------------------------------------------------------------------
+ FASE 4 - DECISAO DO ANALISTA E FEEDBACK                   [concluida]
+-------------------------------------------------------------------------------
+ OBJETIVO: fechar o ciclo. Ate aqui o sistema so TRIAVA; a partir desta fase o
+ analista DECIDE, e a decisao vira registro tao auditavel quanto o parecer. E
+ so com decisao gravada que da para medir o que interessa: o agente acerta o
+ que o HUMANO decidiria? (regra-vs-agente, a metrica da entrega, compara duas
+ maquinas.)
+
+ OBSERVADO NA FASE 2 (entra no desenho da 4):
+   - hoje so o analista ATUAL fica gravado (alertas.analista_id). Quem pegou o
+     caso antes, e quando, se perde ao devolver para a fila. Para compliance,
+     a trilha de transicoes (quem, de que estado, para qual, quando) deve ser
+     append-only como os pareceres - tabela `transicoes`, junto com `decisoes`
+   - a transicao em_analise->concluido foi deixada FECHADA de proposito (2.4).
+     A 4.1 a abre, e so junto com a decisao gravada na mesma transacao
+
+ DECISOES DE DESENHO (tomadas ao detalhar, 2026-09-27):
+   - `concluido` e TERMINAL nesta fase. Reabrir caso decidido e papel de
+     supervisor, que depende de autenticacao de verdade (X-Analista e so
+     identificacao). Por isso UNIQUE(alerta_id) em decisoes: o banco, e nao so
+     o compare-and-set, garante uma decisao por caso.
+   - `escalar` CONCLUI o caso na mesa (estado concluido, decisao 'escalar').
+     O fluxo do segundo nivel (comite / comunicacao ao COAF) esta fora do
+     escopo; o caso escalado e identificavel pela decisao, nao por um estado
+     novo (que exigiria reconstruir a tabela alertas - CHECK nao se altera
+     no SQLite).
+   - a decisao grava o parecer_id que o analista VIU. O corpo do POST traz o
+     parecer que a tela mostrou; se o parecer atual do alerta for outro, 409.
+     Decidir sobre um parecer que nao foi o lido e o erro que isto impede.
+   - esquema v5 -> v6 e ADITIVO (so tabelas novas). A partir desta fase o
+     store guarda decisao humana, que nao se reprocessa: "apagar e
+     reconstruir" deixa de ser aceitavel (mesa/db.py ja avisava). Migracao
+     explicita e so para versoes cujo salto e aditivo; as demais sao recusadas.
+
+ [x] 4.0  Esquema v6: transicoes + decisoes, append-only, e migracao v5->v6
+          - `transicoes`: alerta_id, estado_anterior, estado_novo, ator,
+            ator_tipo ('analista'|'sistema'), registrado_em. Triggers sem
+            UPDATE/DELETE, como pareceres
+          - `decisoes`: alerta_id UNIQUE, parecer_id (NULL se decidido sem
+            parecer), analista_id, decisao CHECK (concordo|discordo|escalar),
+            nivel_risco_analista CHECK (baixo|medio|alto, NULL so em escalar),
+            nivel_risco_agente (copiado do parecer visto, para a metrica nao
+            depender de um join que muda se o parecer mudar), motivo,
+            decidido_em. Triggers sem UPDATE/DELETE
+          - migracao: `python -m mesa.db` leva um store v5 a v6 sem perder nada.
+            Store v1-v4 e recusado com mensagem (hoje aplicar_esquema() so
+            carimba a versao nova num banco velho - colunas novas NAO
+            aparecem com CREATE TABLE IF NOT EXISTS. Brecha latente, fechar)
+          - a API continua recusando (503) esquema diferente, agora apontando
+            o comando de migracao
+          ACEITE: copia do store real (v5, com o caso que o Felipe pegou pela
+                  tela) migra para v6 com as mesmas contagens e o mesmo dono;
+                  store v4 e recusado; UPDATE/DELETE nas duas tabelas abortam.
+
+          FEITO 2026-09-27: copia do store real migrou v5->v6 com as mesmas
+          contagens (317 op, 30 alertas, 80 pareceres) e o CLI-014 ainda com
+          Felipe; rodar de novo nao faz nada. v4 recusado SEM carimbar a versao.
+          O teste do salto aditivo monta o DDL v5 como "o atual sem a secao da
+          Fase 4" e exige que a secao nova so tenha CREATE ... IF NOT EXISTS.
+          >>> BUG PEGO PELO TESTE, NO PROPRIO SCHEMA <<<
+          Um CHECK cuja expressao da NULL PASSA. `length(trim(NULL)) > 0` e
+          NULL: "escalar sem motivo", "discordo com motivo NULL" e "concordo
+          sem nivel" entravam. Corrigido com COALESCE e `IS`; os tres casos
+          viraram parametros do teste.
+          O store real (outputs/mesa.db) NAO foi migrado - o servidor do
+          Felipe estava rodando o codigo v5 sobre ele. Backup no scratchpad.
+ [x] 4.1  Decisao registrada junto com a conclusao do caso
+          - POST /alertas/{id}/decisao, X-Analista obrigatorio, corpo
+            {decisao, nivel_risco?, motivo?, parecer_id}
+          - regras: so o DONO de um caso em_analise decide (409 caso contrario)
+              concordo : exige parecer com nivel valido; o nivel gravado e o
+                         do parecer (o cliente nao manda outro)
+              discordo : exige nivel_risco e motivo
+              escalar  : exige motivo; nivel_risco opcional
+            corpo invalido para a decisao escolhida = 422 com o porque
+          - UMA transacao: compare-and-set em alertas (em_analise + dono ->
+            concluido) + INSERT decisoes + INSERT transicoes. Falhou qualquer
+            parte, nada fica gravado
+          - toda mudanca de estado grava transicao: pegar/devolver (API),
+            triar (worker, ator 'sistema:triagem'), concluir (decisao)
+          - POST /estado continua recusando `concluido`, agora apontando a rota
+            de decisao
+          - GET /alertas/{id} passa a trazer `decisao` e `trilha`; a fila traz
+            a decisao de cada caso
+          - mensagens de erro da API acentuadas (POLIMENTO ANOTADO na Fase 3)
+          - tela: formulario de decisao so para o dono; caso concluido mostra a
+            decisao e a trilha
+          ACEITE: pegar CLI-028, discordar com motivo pela tela -> caso
+                  concluido, decisao e trilha visiveis apos recarregar;
+                  concordo sem parecer = 422; outro analista decidindo = 409;
+                  falha forcada no INSERT da decisao deixa o caso em_analise.
+
+          FEITO 2026-09-27: no navegador (servidor de teste, copia migrada),
+          CLI-028 pego por ana.teste, "discordo" + alto + motivo, dois cliques
+          (armar/confirmar) -> concluido; apos recarregar: decisao (parecer nº
+          53 lido, agente medio), trilha com 2 passos, chip na fila. Nome
+          diferente do dono = sem formulario; nivel vazio = envio barrado.
+          API: 21 testes novos (cada regra, atomicidade com falha forcada na
+          trilha, corrida de duas abas, parecer diferente do lido = 409).
+          >>> CORRIDA REAL NO WORKER, achada ao ler o codigo para a trilha <<<
+          triagem._concluir fazia UPDATE sem condicao: analista pega um caso
+          'novo' enquanto o agente roda -> o worker o jogava para 'triado'
+          com o analista ainda dono. Agora so sai de 'novo' (CAS), e grava a
+          transicao 'sistema:triagem' na mesma transacao.
+          Mensagens da API acentuadas (POLIMENTO da Fase 3), testes ajustados.
+          Nota: um teste usou monkeypatch.undo(), que desfez tambem o
+          redirecionamento do banco e fez um GET cair no store real (leitura,
+          503, nada escrito - conferido). Trocado por restauracao pontual.
+          Validacao no navegador: screenshots vinham CONGELADOS (painel
+          oculto) e uma navegacao so de hash nao recarregou o app.js novo -
+          a mesma armadilha do "codigo velho" da Fase 3. Tudo conferido pelo
+          DOM, com reload forcado.
+ [x] 4.2  Metrica agente-vs-humano (substitui regra-vs-agente como metrica-mor)
+          - GET /metricas?execucao_id: decididos, por decisao, concordancia de
+            nivel agente x analista (com a matriz 3x3), e o CRUZAMENTO com a
+            aderencia: dos pareceres que o verificador marcou como nao
+            fundamentados, quantos o analista rejeitou? (valida o verificador)
+          - regra x analista ao lado, para comparacao com a metrica antiga
+          - denominador zero devolve null, nunca 0% (a mesma distincao de
+            "nao triado" x "diverge")
+          - tela: painel de metricas
+          ACEITE: store com decisoes fabricadas no teste -> numeros exatos
+                  conferidos a mao; store real sem decisao -> null, nao 0%.
+
+          FEITO 2026-09-27: mesa/metricas.py + GET /metricas + painel
+          (#/metricas). 5 decisoes sobre casos reais com os numeros escritos
+          no teste ANTES de rodar: agente x analista 2/4, aceitacao 2/5, regra
+          x analista 3/4, regra x agente 2/5, nao fundamentados 100% rejeitados.
+          Copia do store real sem decisao: tudo null. No navegador, 3 decisoes
+          conferidas a mao contra o painel. Escalar sem nivel fica FORA da
+          comparacao (mutacao que o contava como divergencia: pega).
+ [x] 4.3  Tempo de analise por caso (e o que da para dizer sobre economia)
+          - tempo MEDIDO pela trilha: soma dos intervalos em em_analise ate a
+            decisao (um caso devolvido e repego conta os dois periodos)
+          - "economizado" exige uma linha de base (tempo SEM a ferramenta) que
+            o store nao tem e nao pode inventar. A API so calcula economia se
+            a linha de base for INFORMADA na requisicao, e devolve junto a
+            procedencia ("informada, nao medida"). Sem ela, economia = null
+          ACEITE: trilha fabricada com tempos conhecidos -> soma exata,
+                  incluindo o caso devolvido e repego; sem linha de base,
+                  economia null.
+
+          FEITO 2026-09-27: trilha fabricada -> 900 s (10+5 min, devolvido e
+          repego) e 1200 s; mediana 1050; com 30 min informados, economia 750
+          s e a procedencia "informada, nao medida". Caso de trilha incompleta
+          e declarado (casos_sem_trilha_completa), nao descartado em silencio
+          - no navegador, o CLI-014 real (pego antes da v6) apareceu assim.
+          >>> MUTACAO SOBREVIVENTE <<< medir "pela metade" uma trilha que
+          comeca no meio passava: o unico teste era a trilha de um passo, em
+          que as duas versoes dao None por acaso. Teste novo (saida sem
+          entrada, depois repego) distingue as duas.
+
+ ===> FASE 4 CONCLUIDA em 2026-09-27. Suite: 234 testes pytest (inclui os
+      17 do Node). <===
+
+-------------------------------------------------------------------------------
+ FASE 5 - INGESTAO INCREMENTAL                             [concluida]
+-------------------------------------------------------------------------------
+ OBJETIVO: base nova chega -> so o que mudou e reprocessado, sem apagar o
+ trabalho do analista, sem reescrever fato em silencio, e rodando sozinho.
+
+ >>> ACHADO AO DETALHAR (bloqueante) <<<
+ As ferramentas do agente (nivel_2/tools.py) leem o JSON da ENTREGA, nao o
+ store. Hoje os dois coincidem, entao nada aparece. Na primeira base nova
+ ingerida, o worker triaria com dado velho - e como o hash do parecer e
+ calculado sobre historico_cliente() lido do JSON, ele NAO mudaria: parecer
+ antigo reaproveitado em silencio para cliente com operacao nova, zero chamada
+ de API, nenhum aviso. O 5.0 resolve isso antes de qualquer outra coisa.
+ Tambem assumem "a ultima execucao = retrato completo": a fila, o confronto
+ --store, o verificar_ambiente --store e o exportar. Uma execucao incremental
+ quebra essa premissa. E o caso (GET /alertas/{id}) le as operacoes ATUAIS:
+ depois de uma base nova, um caso decidido ontem mostraria operacao que o
+ analista nunca viu.
+
+ DECISOES DE DESENHO (2026-09-27):
+   - arquivo novo e INCREMENTAL: operacao ausente no arquivo NAO e exclusao.
+     Nenhuma operacao se apaga (DELETE em operacoes vira trigger que aborta)
+   - correcao = mesmo id com algum campo BRUTO diferente (cliente, data,
+     valor, moeda, canal, tipo, contraparte, observacao). valor_brl NAO entra
+     na comparacao: o mesmo arquivo com outra taxa de cambio nao e correcao
+     (a taxa e propriedade do lote - Fase 0)
+   - a versao anterior vai para `operacoes_historico` por TRIGGER no UPDATE:
+     corrigir sem guardar a anterior fica impossivel, nao so proibido
+   - delta = clientes com operacao nova ou corrigida desde o lote da ultima
+     execucao. So vale porque as regras sao POR CLIENTE; um teste prende isso
+     (regras sobre o recorte do delta == regras sobre a base inteira,
+     restritas ao delta). Uma regra entre clientes quebra o teste - e ai o
+     delta tem que alargar, nao o teste afrouxar
+   - execucao incremental cria alerta so para o delta; cada alerta novo
+     `substitui` o vigente do cliente. A fila padrao passa a ser "alertas
+     vigentes" (nao substituidos), nao "a ultima execucao"
+   - alerta substituido: a decisao fica nele (historico). Em analise e
+     substituido -> nao pode ser decidido nem pego (409 apontando o atual);
+     pode ser devolvido. O caso novo mostra a decisao anterior do cliente
+   - execucao COMPLETA quando e a primeira, ou quando versao/parametros das
+     regras mudaram (todo resultado pode mudar); senao, incremental
+   - o caso mostra a base COMO ERA no lote da sua execucao (a versao da
+     operacao vigente naquele lote), nao a atual
+   - v7 precisa de coluna nova em tabela existente (alertas.substitui_alerta_id,
+     execucoes_regras.escopo): primeira migracao que nao e so CREATE.
+     MIGRACOES por versao (ALTER TABLE ADD COLUMN) + teste de que banco
+     migrado == banco novo, a partir de snapshots CONGELADOS do DDL v5 e v6
+
+ [x] 5.0  Pre-requisitos: o agente le do store; migracao por versao (v7)
+          - tools.py ganha fonte injetavel; o worker injeta o DataFrame do
+            store. nivel_2 continua sem importar mesa; a entrega (agente.py,
+            lote.py, MCP) continua lendo o JSON
+          - mesa/db.py: MIGRACOES {versao: [sql]}, aplicadas em ordem, na mesma
+            transacao; DDL v5 e v6 congelados em tests/esquemas/
+          ACEITE: store com operacao que o JSON nao tem -> o worker ve a
+                  operacao e o hash muda; a entrega segue no JSON. Banco v5 e v6
+                  migrados para v7 tem a MESMA estrutura de um v7 novo; copia
+                  do store real (v6, com decisao) migra sem perder nada.
+
+          FEITO 2026-09-27: com o codigo antigo, o teste do agente falha - o
+          reaproveitamento silencioso existia. Agora o CLI-014 com uma operacao
+          a mais no store paga 1 chamada, os outros 29 seguem reaproveitados, e
+          a entrega volta a ler o JSON depois. Migracao: v5 e v6 (DDL congelado
+          do git) migrados == v7 novo em colunas, FKs, indices e triggers;
+          migracao e UMA transacao (falha no 2o ALTER nao deixa o 1o); v6 com 3
+          decisoes e 6 transicoes migrou intacto.
+          >>> EFEITO COLATERAL REAL <<< rodar `verificar_ambiente.py --store`
+          MIGROU o store real de v6 para v7 (conectar() aplica o esquema) - e o
+          servidor do Felipe, ainda na Fase 4, passou a dar 503. Dado intacto.
+          Comandos que so leem agora usam db.abrir_para_leitura(): conferem a
+          versao e recusam, sem migrar (teste de regressao provado por mutacao).
+ [x] 5.2  Versionamento de operacao corrigida
+          - ingestao detecta correcao, faz UPDATE (o trigger guarda a anterior)
+          - GET /alertas/{id} mostra as operacoes como eram no lote da execucao
+          ACEITE: reingerir com 1 operacao corrigida -> 1 versao no historico,
+                  valor novo em operacoes, lote registra 1 correcao; mesmo
+                  arquivo com taxa diferente -> 0 correcoes; caso antigo mostra
+                  o valor antigo, caso novo o novo; DELETE em operacoes aborta.
+
+          FEITO 2026-09-27: OP-00269 corrigida para 7000: o caso antigo do
+          CLI-028 segue com 6.913,84 e sem a operacao que chegou depois; o caso
+          novo mostra 7000 e a nova. USD reenviado com taxa 6.0: 0 correcoes,
+          valor_brl congelado em 540. Correcao que troca o cliente afeta os
+          dois. O teste antigo que FIXAVA a divida ("corrigido nao atualiza")
+          foi substituido - era a especificacao do comportamento velho.
+          Tropecos: ORDER BY com expressao nao vale em UNION (subconsulta); um
+          teste de trigger de DELETE passava vazio - trigger de linha nao
+          dispara em tabela vazia.
+ [x] 5.1  Delta: execucao incremental, vigencia e substituicao
+          - regras_run: completa x incremental decidido pelo store; sem delta,
+            nenhuma execucao ("nada a fazer")
+          - fila, worker, confronto, verificar_ambiente, exportar e metricas
+            passam a ler alertas vigentes
+          - API: substituido nao se pega nem se decide; caso novo traz a
+            decisao anterior; tela mostra os dois lados
+          ACEITE: base nova com operacoes para 2 clientes (1 ja decidido, 1 em
+                  analise) -> execucao com 2 alertas; os outros 28 intactos
+                  (estado, dono, decisao); o worker chama o LLM so para os 2;
+                  rodar de novo = nada a fazer; o verificar_ambiente --store
+                  continua reproduzindo os 8 numeros sobre a base original.
+
+          FEITO 2026-09-27: aceite inteiro num teste so, pela API: CLI-028
+          decidido e CLI-014 em analise recebem operacao nova -> execucao
+          incremental com 2 alertas; os outros 28 identicos (alerta, estado,
+          dono); CLI-014 antigo so devolve (pegar/decidir = 409); CLI-028 novo
+          traz a decisao anterior; worker: 2 triados, 2 chamadas; regras de
+          novo = None; metricas contam a decisao do alerta substituido.
+          Garantia do delta: regras sobre o recorte de cada um dos 30 clientes
+          == regras sobre a base inteira. Mutacoes pegas: delta sem o historico
+          (correcao que move operacao), parametros ignorados, fila e
+          verificar_ambiente lendo "a ultima execucao".
+          Navegador (store de teste, sem chamar LLM): aviso no alerta
+          substituido, so "Devolver", sem formulario; caso novo com a decisao
+          anterior e 13 operacoes; alerta antigo continua com 12.
+ [x] 5.3  Ciclo agendavel
+          - python -m mesa.ciclo --entrada <pasta>: ingere arquivos ainda nao
+            ingeridos (por sha256), roda as regras (incremental) e a triagem
+          - trava contra dois ciclos ao mesmo tempo; --a-cada <min> para rodar
+            em laco; servico no docker-compose; linha de cron documentada
+          ACEITE: dois ciclos seguidos sem arquivo novo = 0 lote, 0 execucao,
+                  0 chamada de API; arquivo novo na pasta e processado uma vez;
+                  segundo ciclo simultaneo sai sem fazer nada.
+
+          FEITO 2026-09-27: mesa/ciclo.py. Base ja ingerida com outro nome =
+          reconhecida pelo sha256; passadas seguidas nao mudam nenhuma contagem
+          e nao chamam API. Arquivo novo: 1 lote, 1 execucao incremental, 1
+          chamada. Trava flock (liberada pelo SO se o processo morre). Ciclo
+          que cai entre regras e triagem e retomado pelo seguinte. NAO exporta
+          outputs/ (arquivos da entrega, commitados). Servico mesa-ciclo no
+          compose; linha de cron no comentario; dados/entrada/ no .gitignore.
+
+ ===> FASE 5 CONCLUIDA em 2026-09-27. Suite: 261 testes pytest (inclui os
+      17 do Node). <===
+
+-------------------------------------------------------------------------------
+ FASE 6 - CONTRA-ISCA: O QUE PASSOU ENQUANTO OLHAVAMOS
+ Objetivo: achar o fluxo que passa AO LADO de um alerta chamativo - operacoes
+           pequenas, espalhadas em outros clientes, ligadas a ele - que as
+           regras de hoje nao veem por construcao.
+ Portao  : num cenario de isca PLANTADO com os DOIS padroes (fracionamento
+           distribuido e volume grande passando durante a analise), o botao
+           acha as operacoes plantadas de cada um com acerto MEDIDO e
+           registrado (quantas achou, quanto lixo trouxe junto), e nenhuma
+           ligacao aparece na tela sem dizer de onde vem.
+-------------------------------------------------------------------------------
+ ORIGEM (ideia do Felipe, 2026-09-30)
+   A PF recebe a denuncia de um caminhao com 30 kg de cocaina, monta a blitz e
+   acha a droga. Enquanto esta ocupada com ele, passam 3 caminhoes com 5
+   toneladas de pasta base. O caminhao pequeno era verdade - e era ISCA.
+   Aplicado a PLD: quantos casos chamativos nao estao ocupando o analista
+   enquanto operacoes pequenas passam pelo lado?
+
+ NOME (decidido ao estruturar)
+   NAO "falso positivo". O caminhao dos 30 kg e VERDADEIRO positivo (a
+   denuncia era verdade); o dano sao os FALSOS NEGATIVOS que passaram ao mesmo
+   tempo. E em PLD "falso positivo" ja tem dono - o alerta que se mostrou
+   legitimo, a maioria de todos os alertas: um botao com esse nome seria lido
+   como "marcar como falso positivo", o contrario da ideia. Nome de trabalho:
+   "Cacar o que passou" (final a confirmar - E1).
+
+ POR QUE O SISTEMA DE HOJE NAO VE ISTO
+   As regras olham UM cliente por vez (a Fase 5 prende isso num teste:
+   test_regras_sobre_o_delta_sao_as_mesmas_da_base_inteira). Fracionamento
+   espalhado por 10 clientes deixa cada um abaixo do limite: nenhuma regra
+   dispara. A contra-isca e exatamente o olhar ENTRE clientes.
+   IMPORTANTE: ela e uma CONSULTA sob demanda, nao uma regra do regras_run.
+   A premissa "regras por cliente" (base da execucao incremental) continua
+   valendo; se um dia a caca virar regra automatica, aquele teste quebra - e o
+   delta tem que alargar, como ja esta escrito na Fase 5.
+
+ MATERIA-PRIMA MEDIDA NA BASE (2026-09-30)
+   111 contrapartes; 64 aparecem em 3+ clientes; 57 ligam cliente sinalizado a
+   cliente SEM sinal. Na base sintetica isso e COINCIDENCIA (nomes sorteados de
+   uma lista curta) - o que ja mostra o maior risco: a caca gerar seus proprios
+   falsos positivos. Contraparte popular (a distribuidora de energia de todo
+   mundo) nao pode pesar como ligacao rara.
+
+ DUAS HIPOTESES - AS DUAS NO ESCOPO (decisao do Felipe, 2026-09-30: "o que me
+ preocupa sao os dois" - a fase ataca fracionamento E volume grande passando)
+   A. Fracionamento DISTRIBUIDO: operacoes logo abaixo dos limites, em varios
+      clientes, com a mesma contraparte rara, na mesma janela de dias.
+   B. Volume grande DURANTE A ANALISE: o que entrou (lotes do ciclo) enquanto
+      o caso chamativo estava em_analise - a trilha da Fase 4 sabe exatamente
+      quando. Aqui o valor pode ser ALTO: o que o torna suspeito nao e ficar
+      abaixo do limite, e passar ligado a isca enquanto a atencao estava nela.
+   As duas caem no mesmo motor (6.1) com componentes diferentes: A pesa
+   "logo abaixo do limite"; B pesa "dentro da janela de analise" e volume.
+
+ DECISOES DE DESENHO
+   - calculo em pandas, deterministico; o LLM NAO participa (principio 4) - e,
+     de quebra, a caca nao manda dado nenhum para fora (nada muda na LGPD)
+   - sob demanda: o analista clica num caso. Rodar sozinho nos casos mais
+     chamativos fica para depois de medir quanto lixo a caca traz
+   - "logo abaixo do limite" sai dos PARAMETROS GRAVADOS na execucao do alerta
+     (execucoes_regras.parametros_json), nunca de numero fixo no codigo
+   - peso da contraparte pela raridade (quantos clientes a usam): ligacao por
+     contraparte que 7 clientes usam vale muito menos que por uma que 2 usam
+   - cada ligacao mostrada com a procedencia de cada componente ("mesma
+     contraparte rara X, usada por 2 clientes; 3 dias depois; R$ 19.400, 97% do
+     limite de R$ 20.000") - principio 2
+   - o sistema caca, o humano decide: o resultado e SUSPEITA registrada pelo
+     analista, nunca alerta criado sozinho (principio 1)
+
+ DECISOES A CONFIRMAR COM O FELIPE
+   (2026-10-03: Felipe mandou "atacar a proxima fase"; E1 e E3 seguiram a
+   RECOMENDACAO, as duas reversiveis sem perda - trocar o nome e uma constante
+   em logica.js; suspeita registrada continua valendo se um dia virar alerta)
+   E1. Nome do botao. Opcoes: "Cacar o que passou" (recomendado - diz o que
+       faz), "Contra-isca", "O que passou enquanto olhavamos".
+   E2. RESOLVIDA: as duas hipoteses, ambas no portao. Ordem de construcao so
+       por dependencia: A primeiro (roda sobre a base), B em seguida (usa a
+       trilha e os lotes do ciclo).
+   E3. O que o analista faz com uma ligacao suspeita. Recomendado: REGISTRAR a
+       suspeita (tabela nova, append-only, com origem e motivo) - criar alerta
+       formal para outro cliente exigiria nova `origem` em alertas, cujo CHECK
+       nao se altera no SQLite (reconstrucao de tabela). Fica para depois.
+
+ [x] 6.0  Cenario de isca plantado - ANTES do detector
+          - gerador deterministico (semente fixa): um caso chamativo (a isca) +
+            padrao A: N operacoes pequenas em outros clientes ligadas a ela
+              (contraparte rara, janela de dias, logo abaixo do limite)
+            padrao B: um lote chegando ENQUANTO a isca esta em analise, com
+              operacoes de valor alto em outros clientes ligadas a ela
+            + RUIDO proposital (contraparte popular, valores altos fora da
+              janela, lote fora do periodo de analise)
+          - por que primeiro: sem o gabarito, "o botao achou coisas" nao prova
+            nada - e a mesma licao da mediana-armadilha da Fase 3
+          ACEITE: o cenario, ingerido num store de teste, NAO e pego pelas
+                  regras de hoje (prova o ponto cego); o gabarito de cada
+                  padrao fica gravado junto do cenario.
+          FEITO 2026-10-03: mesa/cenario_isca.py, montado POR CIMA da base real
+          (as 57 coincidencias dela entram como ruido de graca). Isca CLI-101
+          (uma operacao enorme -> valor atipico), padrao A (5-8 clientes, uma
+          operacao cada a 86-99% de R$ 20 mil, contraparte rara, +-5 dias), B
+          (3 empresas grandes, R$ 80-160 mil, lote ingerido com a isca em
+          analise), ruido: popular na janela e na faixa, rara fora da janela,
+          lote depois da analise. Horarios de lote e trilha FABRICADOS (so em
+          store de cenario; montar() recusa banco existente). Semente 7: 0
+          sinalizacao em plantada, todo cliente plantado 'controle', isca
+          'regra'. gabarito.json + os 3 lotes gravados ao lado do banco.
+ [x] 6.1  Motor de ligacoes (mesa/contra_isca.py)
+          - dado um alerta: operacoes de OUTROS clientes pontuadas por
+            contraparte rara, janela de tempo e faixa abaixo do limite; cada
+            componente do escore com a sua procedencia
+          ACEITE: no cenario plantado, as N plantadas no topo da lista; a
+                  contraparte popular do ruido nao sobe; mudar os parametros
+                  gravados da execucao muda a faixa "abaixo do limite".
+          FEITO 2026-10-03: escore = peso da contraparte x (janela + faixa +
+          distribuicao [+ analise + volume no B]), cada termo com a frase de
+          procedencia. DECISAO CENTRAL: peso = 1/(1 + clientes que usam a
+          contraparte FORA da ligacao), nao "quantos clientes a usam" - o
+          fracionamento distribuido usa a mesma contraparte em muitos clientes,
+          SO na janela; contar o total puniria o padrao procurado. Semente 7:
+          as 7 plantadas A no topo (2,50-3,00), popular <= 0,33.
+          DOIS ACHADOS NA SEMENTE DE DESENVOLVIMENTO, corrigidos por principio:
+          (1) a cobertura de um cliente B (operacao de ABRIL) chegou no lote da
+          analise e subiu acima das plantadas B: "passou enquanto olhavamos"
+          passou a exigir DATA da operacao no periodo (ate janela_dias antes do
+          inicio), nao so o lote; (2) 3 clientes reais usando a mesma
+          contraparte na janela sem estar na faixa contavam como
+          "distribuicao": a distribuicao do A conta so quem esta na janela E na
+          faixa. Mutacao: 6 defeitos reintroduzidos (peso pelo total, B sem
+          data, limite fixo, periodo sem fim, distribuicao sem filtro, janela
+          sem limite), todos pegos - o da distribuicao so depois de um teste
+          novo (sobreviveu ao primeiro).
+ [x] 6.2  Medir o acerto
+          - varias sementes do cenario; quantas plantadas o motor acha
+            (cobertura) e quanto do topo e ruido (precisao)
+          - meta definida ANTES de medir e registrada; nao atingiu = redesenha
+            o motor, nao baixa a meta
+          ACEITE: numeros gravados no roadmap, por semente, com a meta ao lado.
+          META (registrada em 2026-10-03, ANTES de rodar a medicao):
+            - semente de DESENVOLVIMENTO: 7 (a unica olhada ao construir);
+              sementes de MEDICAO: 101 a 120, nunca abertas antes de medir
+            - "topo" = as |A| + |B| primeiras ligacoes da lista
+            - cobertura A (plantadas A no topo / |A|): media >= 90%, e nenhuma
+              semente abaixo de 70%
+            - cobertura B (idem para B): media >= 90%, nenhuma abaixo de 2/3
+            - precisao do topo (plantadas no topo / tamanho do topo): media >= 80%
+            - ruido plantado: contraparte popular NUNCA no topo; ruido fora da
+              janela e lote depois da analise NUNCA na lista (nem como ligacao)
+          MEDIDO 2026-10-03 (python -m mesa.cenario_isca --medir 101-120):
+            semente: A(n)    B     precisao  margem  ligacoes
+              101 : 100%(7) 100%   100%     3,15    19
+              102 : 100%(7) 100%   100%     3,67    17
+              103 : 100%(8) 100%   100%     5,14    17
+              104 : 100%(6) 100%   100%     6,30    14
+              105 : 100%(7) 100%   100%     2,13    17
+              106 : 100%(6) 100%   100%     3,67    16
+              107 : 100%(8) 100%   100%     3,67    20
+              108 : 100%(7) 100%   100%     3,00    21
+              109 : 100%(5) 100%   100%     1,78    15
+              110 : 100%(5) 100%   100%     3,67    12
+              111 : 100%(8) 100%   100%     4,83    16
+              112 : 100%(6) 100%   100%     3,50    16
+              113 : 100%(5) 100%   100%     3,05    15
+              114 : 100%(5) 100%   100%     3,67    14
+              115 : 100%(7) 100%   100%     3,86    17
+              116 : 100%(6) 100%   100%     3,50    18
+              117 : 100%(7) 100%   100%     4,20    20
+              118 : 100%(6) 100%   100%     2,67    18
+              119 : 100%(7) 100%   100%     4,41    16
+              120 : 100%(8) 100%   100%     1,52    19
+            META: cobertura A >= 90% (min 70%), B >= 90% (min 2/3), precisao
+            >= 80% -> ATINGIDA nas 20; ruido popular no topo: 0; fora da janela
+            e depois da analise na lista: 0. Margem = pior plantada / melhor
+            nao plantada (minima 1,52, semente 120): a separacao nao e sorte.
+            LEITURA HONESTA (nao e "a caca acha 100% no mundo"): o cenario foi
+            escrito com as mesmas caracteristicas que o motor pontua - e
+            CIRCULAR por construcao. Prova que o motor acha o que foi desenhado
+            para achar, resistindo aos 3 ruidos plantados e as coincidencias da
+            base real; nao prova cobertura de lavagem real, que pode nao usar
+            contraparte comum. Os ~7 nao plantados por semente (16,9 ligacoes
+            em media) sao o "lixo" que o analista ve abaixo das plantadas.
+ [x] 6.3  Esquema v8 e API
+          - tabela suspeitas (append-only): alerta de origem, cliente e
+            operacoes apontados, componentes do escore, analista, motivo, quando
+          - GET /alertas/{id}/contra-isca (ligacoes com procedencia);
+            POST /alertas/{id}/suspeitas (registrar, com X-Analista)
+          ACEITE: v7 migrado == v8 novo (DDL v7 congelado); suspeita nao se
+                  altera nem se apaga; a caca nao escreve nada, so o registro.
+          FEITO 2026-10-03: tests/esquemas/esquema_v7.sql (do git), migracao
+          7->8 sem ALTER (so tabela nova); estrutura migrada == nova (v5, v6,
+          v7). suspeitas com 2 triggers append-only e CHECK de motivo/analista
+          (COALESCE). POST recalcula a caca e grava o RETRATO do servidor (nao
+          o que o navegador mandou); operacao que nao e ligacao atual daquele
+          cliente -> 409; suspeita identica -> 409 dizendo quem registrou. GET
+          da caca: bytes do banco identicos antes/depois. O caso traz
+          suspeitas_registradas (a partir dele) e suspeitas_sobre_o_cliente
+          (outro caso o apontou).
+ [x] 6.4  Tela: o botao e o mapa
+          - "Cacar o que passou" no caso; a isca no centro, os clientes ligados
+            em volta, cada ligacao com a frase de procedencia; registrar
+            suspeita a partir de uma ligacao
+          ACEITE: no navegador, com o cenario plantado, o analista ve as
+                  ligacoes plantadas e registra uma suspeita que aparece no caso.
+          FEITO 2026-10-03, no navegador embutido, servidor na porta 8765 sobre
+          o cenario da semente 7 (o store real nao foi tocado): botao "Cacar o
+          que passou" -> mapa (isca no centro, 12 clientes mais fortes em
+          volta, espessura = escore, cor = padrao), 23 grupos com cada termo e
+          sua frase; registro em dois cliques como a decisao; a suspeita
+          apareceu no grupo e, via "abrir o caso", no caso do CLI-115 ("a
+          partir do caso CLI-101"). A caca sobrevive ao redesenho quando o
+          nome do analista muda. 400 px: sem rolagem horizontal. 0 erro no
+          console. Logica pura em logica.js com 6 testes no Node.
+ [x] 6.5  Padrao B no motor: o que entrou enquanto o caso estava em analise
+          - janela = os periodos em_analise da trilha; operacoes = as de lotes
+            ingeridos nesses periodos, em outros clientes, ligadas ao caso
+          ACEITE: trilha e lotes fabricados com horarios conhecidos -> so as
+                  operacoes dos lotes dentro da janela aparecem; no cenario
+                  plantado, as de valor alto do padrao B sobem mesmo NAO
+                  estando abaixo de limite nenhum; acerto medido como no 6.2.
+          FEITO 2026-10-03 (construido junto do 6.1): periodos pela trilha
+          (aberto = "agora", saida sem entrada nao vira periodo); lote dentro
+          do periodo E data da operacao no periodo. Teste: mesma contraparte,
+          valor e data do B, so o lote chegando depois de devolvida a isca ->
+          fora da lista; caso reaberto e lote novo -> entra com "-> agora".
+          Acerto B no 6.2: 100% nas 20 sementes.
+
+-------------------------------------------------------------------------------
+ FASE 7 - PRONTO PARA PILOTO: DADO QUE NAO SAI, IDENTIDADE QUE SE PROVA
+ Objetivo: as duas coisas que hoje impedem usar a Mesa com dado real de banco.
+ Portao  : (a) nenhum dado identificavel de cliente sai para o provedor de LLM
+           - provado por um provedor-espiao que grava TUDO o que recebe nos 30
+           clientes; (b) toda acao registrada na trilha tem uma identidade
+           AUTENTICADA, e a tela nao aceita mais "digite seu nome".
+-------------------------------------------------------------------------------
+ POR QUE ESTAS DUAS, E NESTA ORDEM
+   - LGPD (docs/DECISOES.md, "Enviar dados de cliente para uma API externa"):
+     hoje cada parecer envia ao Groq o cliente_id, os NOMES das contrapartes
+     (historico_cliente e operacoes_do_dia) e os valores. Com dado real, nome,
+     CPF/CNPJ e contraparte identificavel. Sem resolver isto, nao ha piloto -
+     por isso vem primeiro.
+   - Identidade: X-Analista e IDENTIFICACAO, nao autenticacao - qualquer um
+     digita qualquer nome. A trilha append-only da Fase 4 registra fielmente
+     o que foi DITO, nao quem fez. Sem autenticacao, a auditoria nao prova nada.
+
+ O QUE O CODIGO FAZ HOJE (levantado ao detalhar, 2026-09-30)
+   - nivel_2/agente.py e nivel_3/agente_mcp.py instanciam Groq(...) NA
+     IMPORTACAO: importar o modulo exige GROQ_API_KEY (os testes poem uma chave
+     falsa no conftest) e trocar de provedor e editar dois arquivos
+   - os testes trocam o LLM com monkeypatch em agente.CLIENT.chat.completions
+   - o hash do parecer (cache_parecer.calcular_hash) inclui o nome do MODELO:
+     mudar como o modelo e identificado invalida os 50 pareceres historicos e
+     custa 30 chamadas novas. RESTRICAO: para o provedor atual o hash tem que
+     sair IDENTICO (teste com os hashes gravados no store)
+
+ DECISOES A CONFIRMAR COM O FELIPE ANTES DO 7.4 (recomendacao em cada uma)
+   D1. Mecanismo de autenticacao.
+       Recomendado: AUTENTICACAO NO PROXY. Um proxy de identidade na frente da
+           API (oauth2-proxy com o SSO do banco - OIDC/AD) autentica, e a API so
+           confia no cabecalho de identidade que ELE poe. A API continua presa
+           ao 127.0.0.1: so o proxy a alcanca. Quase nenhum codigo de seguranca
+           escrito a mao - que e o que se quer num banco.
+       Alternativas descartadas: senha propria na Mesa (reinventar login e o
+           erro classico); OIDC direto no FastAPI (mais codigo e dependencia,
+           mesmo resultado).
+   D2. Pseudonimizar OU modelo no perimetro? Recomendado: os DOIS, em camadas.
+       A interface (7.1) permite o modelo interno; a pseudonimizacao (7.2) vale
+       para qualquer provedor - inclusive o interno, que tambem nao precisa
+       saber quem e o cliente para achar o padrao.
+   D3. Valores e datas continuam saindo em claro: sao o que o modelo interpreta,
+       e o verificador de aderencia confere NUMEROS. Risco residual (valor +
+       data podem reidentificar alguem com acesso a outra base) documentado,
+       nao escondido.
+
+ [ ] 7.1  ProvedorLLM - a fronteira do LLM atras de uma interface
+          - nivel_2/provedor_llm.py: Protocol ProvedorLLM (completar mensagens
+            + tools -> resposta no formato que o agente ja trata) e tres
+            implementacoes: Groq (a de hoje), "compativel com OpenAI" por URL
+            (vLLM/Ollama/modelo do banco no perimetro - via httpx, que ja e
+            dependencia) e Falso (para testes)
+          - escolha por ambiente (LLM_PROVEDOR, LLM_URL); cliente criado na
+            PRIMEIRA chamada, nao na importacao
+          - agente.py e agente_mcp.py passam a pedir o provedor; nivel_2 segue
+            sem importar mesa
+          - os testes trocam o provedor, nao fazem monkeypatch no SDK
+          ACEITE: a suite inteira passa SEM GROQ_API_KEY (o hack do conftest
+                  sai); os 30 alertas triados com o provedor Groq reaproveitam
+                  os mesmos 50 pareceres (hash identico); um servidor falso
+                  compativel com OpenAI, local, responde e o parecer e gravado.
+ [ ] 7.2  Pseudonimizacao na fronteira
+          - tudo o que vai ao provedor passa por uma camada so: cliente_id e
+            nomes de contraparte viram fichas (CLIENTE, CP-1, CP-2...) nas
+            mensagens, nos argumentos das ferramentas e nos retornos delas; o
+            mapa ficha->nome vive so na memoria daquela triagem
+          - a resposta volta reidentificada antes de gravar; ficha que o modelo
+            deformou ("contraparte 1") e detectada e o parecer e marcado - nao
+            se grava texto com ficha orfa como se estivesse completo
+          - o hash continua sobre o dado REAL (o store e interno)
+          ACEITE: provedor-espiao grava tudo o que recebe na triagem dos 30:
+                  zero ocorrencia de cliente_id ou nome de contraparte reais;
+                  pareceres gravados com os nomes certos; ficha deformada vira
+                  parecer marcado, nao texto errado. Aderencia continua 28/30.
+ [ ] 7.3  Esquema v9: de onde veio cada parecer e cada acao
+          - pareceres.provedor e pareceres.pseudonimizado (ALTER, migracao
+            v8->v9 no mesmo padrao da Fase 5; pareceres antigos = 'groq', 0)
+          - transicoes.autenticacao e decisoes.autenticacao ('declarada' |
+            'proxy'): uma linha da trilha diz se a identidade foi PROVADA
+          - tabela usuarios (id, nome, papel analista|supervisor, ativo)
+          ACEITE: v8 migrado == v9 novo (DDL v8 congelado); store real migra
+                  sem perder nada; o historico antigo aparece como 'declarada'.
+ [ ] 7.4  Autenticacao (depende de D1)
+          - MESA_AUTH=proxy: identidade so do cabecalho do proxy (nome
+            configuravel); X-Analista e IGNORADO e sua presenca registrada;
+            usuario inativo ou desconhecido = 403
+          - MESA_AUTH=dev (padrao local): o comportamento de hoje, e toda acao
+            gravada como 'declarada' - nunca se passa por autenticada
+          - docker-compose com oauth2-proxy de exemplo, API sem porta publica
+          ACEITE: em modo proxy, POST sem o cabecalho do proxy = 401, com
+                  X-Analista forjado = 401 e nada gravado; com o cabecalho, a
+                  trilha grava o usuario e 'proxy'. Teste com um proxy de
+                  mentira na frente do uvicorn real (nao so TestClient).
+ [ ] 7.5  Perfil supervisor
+          - reatribuir caso em analise de A para B e devolver caso de outro:
+            so supervisor, motivo obrigatorio, na trilha com o papel
+          - FORA desta fase, registrado: reabrir caso concluido (exige versao
+            de decisao - hoje UNIQUE(alerta_id) - e e mudanca de tabela, nao
+            ALTER); dupla checagem (4 olhos) para decisao de alto risco
+          ACEITE: analista tentando reatribuir = 403; supervisor reatribui com
+                  motivo e a trilha mostra quem, de quem, para quem e por que.
+ [ ] 7.6  Tela com identidade
+          - modo proxy: some o campo "seu nome"; o topo mostra quem esta logado
+            e o papel; acoes de supervisor so para supervisor
+          - trilha e decisao mostram "identidade provada" x "declarada"
+          ACEITE: no navegador, analista e supervisor veem telas diferentes, e
+                  a trilha de um caso mostra as duas origens de identidade.
+
+ CANDIDATOS A FASE 8 (anotados, nao detalhados): fluxo do segundo nivel do
+ "escalar" (comite / comunicacao ao COAF); backup do store e alerta de falha
+ do ciclo; Postgres para multiusuario; reabrir caso com versao de decisao;
+ dupla checagem.
+
+===============================================================================
+ DIVIDA TECNICA E RISCOS CONHECIDOS (nao virar surpresa depois)
+===============================================================================
+ [ ] LGPD: pipeline envia dado de cliente para API de terceiro. Bloqueia piloto
+     com dado real. -> FASE 7 (7.1 ProvedorLLM, 7.2 pseudonimizacao).
+ [x] Reingestao de arquivo CORRIGIDO nao atualiza operacao existente.
+     RESOLVIDO na Fase 5.2: correcao vira versao nova, anterior no historico.
+ [ ] mesa/ciclo.py usa fcntl (trava de arquivo): roda em Linux/macOS/Docker,
+     nao em Windows nativo. Suficiente para o alvo (servidor/container).
+ [ ] Execucao incremental: se uma correcao tira a UNICA operacao de um cliente
+     (move para outro), esse cliente some da base e nao ganha alerta novo - o
+     vigente dele fica com a base antiga. Raro; tratar quando existir cliente
+     "encerrado" como conceito.
+ [ ] `python -m mesa.ingestao` reenviando o mesmo arquivo cria um lote com 0
+     inseridas (registro de recebimento). O ciclo evita pelo sha256; a CLI
+     avulsa nao. Inofensivo nos numeros (verificar_ambiente ignora lote vazio).
+ [ ] Arredondamento SQLite x pandas: se 0.4 falhar por ultimo bit, usar
+     pytest.approx(rel=1e-9) e REGISTRAR a decisao, nao afrouxar em silencio.
+ [ ] data como TEXT 'YYYY-MM-DD' (SQLite nao tem tipo data). Ordena correto
+     como string; nunca misturar formato na escrita.
+ [ ] Portabilidade Postgres: todo o DDL e portavel exceto os TRIGGERS - eram 2
+     quando esta nota foi escrita, hoje sao 12 (pareceres, transicoes,
+     decisoes, operacoes, operacoes_historico, suspeitas), e o de versao de operacao faz
+     INSERT, nao so RAISE. RAISE(ABORT) -> RAISE EXCEPTION em funcao plpgsql.
+     Continua localizado (um arquivo), mas nao e mais "2 linhas".
+
+===============================================================================
+ REGISTRO DE EXECUCAO (o que foi feito, quando, e o que a evidencia mostrou)
+===============================================================================
+ 2026-10-03  FASE 6 CONCLUIDA (6.0 a 6.5). 301 testes (+36: 35 da contra-isca,
+             1 da migracao v7). Esquema v8 (tabela suspeitas). A meta do 6.2
+             foi gravada ANTES de medir, com semente de desenvolvimento (7)
+             separada das de medicao (101-120): 100% de cobertura A e B e de
+             precisao nas 20, margem minima 1,52 - lido com a ressalva de que o
+             cenario e circular por construcao (ver 6.2). E1 e E3 seguiram a
+             recomendacao. PROXIMO: Fase 7 (LGPD + identidade), depois deploy.
+ 2026-09-30  RENUMERACAO (decisao do Felipe): a contra-isca - ideia dele, a
+             partir da historia do caminhao-isca - entra como FASE 6. A fase
+             "pronto para piloto" detalhada mais cedo hoje (LGPD + identidade)
+             passa a ser a FASE 7: os passos 6.1-6.6 da entrada logo abaixo sao
+             os 7.1-7.6 de agora, e o esquema dela vai de v8 para v9 (a v8 e a
+             da tabela de suspeitas da Fase 6). Candidatos futuros: Fase 8.
+             ATENCAO: a Fase 7 continua sendo a que libera DADO REAL. Um deploy
+             de demonstracao (base sintetica) nao depende dela; um piloto sim.
+ 2026-09-30  Fase 6 detalhada (6.1 a 6.6): LGPD na fronteira do LLM e
+             identidade autenticada. Tres decisoes (D1-D3) para o Felipe
+             confirmar antes do 6.4. Restricao levantada ao detalhar: o hash do
+             parecer inclui o nome do modelo - a interface nova nao pode muda-lo
+             para o provedor atual. Nota de Postgres corrigida (10 triggers).
+             Tambem nesta data: botao Metricas testado no servidor real (so
+             leitura); enderecos da tela versionados pelo conteudo; "Execucao
+             null" e favicon corrigidos. 265 testes.
+ 2026-09-27  AUDITORIA DO SISTEMA INTEIRO (pedido do Felipe, apos a Fase 5).
+             264 testes, 0 avisos. Pipeline montado do ZERO num banco
+             temporario: 8 numeros + top10 OK, 30 triados com 0 chamada de API,
+             28/30 fundamentados, pareceres_lote.json / metricas_lote.csv /
+             aderencia_pareceres.csv regenerados BYTE A BYTE iguais aos
+             commitados, confronto 23/30 com confronto_resumo.json identico.
+             Entrega original (verificar, dados.py, import do MCP) intacta.
+             Nenhum segredo, .env ou banco versionado (arquivos e historico).
+             ACHADOS E CORRECOES:
+             (1) conectar(caminho=CAMINHO_PADRAO) fixava o padrao na IMPORTACAO:
+                 o proprio script da auditoria, "apontando para um banco
+                 temporario", escreveu 1 lote vazio no store real. Estrago
+                 conferido (so a linha do lote, nada ligado a ela), backup, linha
+                 removida. Padrao agora lido na chamada; e um fixture autouse
+                 impede qualquer teste de tocar outputs/mesa.db (conferido pelo
+                 mtime do arquivo antes/depois da suite).
+             (2) .dockerignore nao excluia outputs/mesa.db nem dados/entrada/:
+                 store e arquivos de cliente iriam para as camadas da imagem.
+             (3) Jupyter sem token publicado em todas as interfaces (8888):
+                 qualquer maquina da rede executaria codigo. Agora 127.0.0.1.
+             (4) pd.to_datetime sem formato: "05/03/2026" virava 3 de MAIO num
+                 arquivo so com datas BR (medido) - e o resultado dependia da
+                 primeira data do arquivo. Formato ISO fixo: fora dele, invalida.
+                 Era o unico aviso da suite desde a entrega.
+             (5) API sem limite de tamanho em motivo/X-Analista, num registro
+                 append-only (a tela limitava, a API nao).
+             (6) README nao mencionava a Mesa (5 fases sem instrucao de uso).
+             (7) exportar imprimia "execucao None" depois da vigencia.
+ 2026-09-27  FASE 5 CONCLUIDA (5.0 a 5.3). 261 testes (+23). Base nova entra,
+             so o delta e reavaliado e triado, correcao vira versao, o ciclo
+             roda sozinho. Esquema v7 - primeira migracao com ALTER.
+             Achados: (1) o agente lia o JSON, nao o store - base nova seria
+             triada com dado velho e parecer antigo reaproveitado em silencio;
+             (2) comando de verificacao migrava o store (derrubou o servidor do
+             Felipe com 503, dado intacto); (3) consumidores de "ultima
+             execucao" dariam numeros do delta como se fossem da base.
+             TAMBEM (Fase 4, relatado pelo Felipe): botao Metricas "morto" - o
+             navegador usava o app.js antigo do cache sem perguntar ao
+             servidor (log: so o index.html foi pedido). Arquivos da tela saem
+             agora com Cache-Control: no-cache; botao redesenhado com estado ativo.
+ 2026-09-27  FASE 4 CONCLUIDA (4.0 a 4.3). 234 testes (+49). O analista decide
+             e a decisao e registro append-only, junto da trilha de toda
+             transicao. Esquema v6, primeiro salto MIGRADO (nao reconstruido).
+             Tres achados: CHECK com NULL passando no schema (pego pelo teste),
+             corrida do worker com o analista (pega lendo o codigo), mutacao
+             sobrevivente no tempo de analise (teste insuficiente, corrigido).
+             Store real ainda em v5: migrar com `python -m mesa.db` (a API nova
+             recusa v5 com 503 apontando esse comando).
+ 2026-09-12  Roadmap criado. Fase 0 iniciada.
+ 2026-09-12  0.1 concluido. Efeito colateral: conftest.py nao punha a RAIZ no
+             sys.path - `from mesa import ...` so funcionava via `python -m
+             pytest`. Corrigido; dependencia silenciosa de COMO o teste roda.
+ 2026-09-26  FASE 3 CONCLUIDA (3.0 a 3.5). 185 testes pytest + 13 Node.
+             A tela funciona: o caso CLI-028 da apresentacao, de verdade.
+             Decisao do 3.2 resolvida (verificador grava as posicoes; um parser
+             so). Achados: transbordamento de grid medido a 1440px; brecha de
+             "qualquer um devolve o caso de outro" fechada na API; e um quase
+             falso negativo - o navegador validando um servidor de codigo velho.
+             Todas as guardas novas provadas reintroduzindo o defeito.
+             TAMBEM: a apresentacao (artifact) tinha 3 IDs de operacao e 1
+             mediana INVENTADOS na maquete, sob um rodape que dizia "todos os
+             numeros extraidos das saidas". Achado ao ver o OP-00269 real saindo
+             do verificador. Corrigido (versao 2), citacao agora literal.
+             Nada commitado da Fase 3 ainda.
+ 2026-09-26  FASE 2 CONCLUIDA (2.0 a 2.6) - sessao com Opus 5.5. 166 testes
+             verdes (+45). API FastAPI sobre o store, 7 rotas, sem calculo de
+             regra. Dois achados que valem a sessao:
+             (1) bug real: 278/300 requisicoes concorrentes davam 500 (threads x
+                 sqlite3), invisivel no TestClient sequencial;
+             (2) o teste de corrida por carga pegava o bug so 2 vezes em 3 -
+                 substituido como protecao por um teste deterministico.
+             Nos dois casos o teste foi PROVADO reintroduzindo o bug.
+             Duas ambiguidades do spec resolvidas e registradas no 2.4.
+             Fase 3 detalhada (3.0 a 3.5). Observacoes para a Fase 4 anotadas.
+             Nada commitado ainda - aguardando o Felipe.
+ 2026-09-12  outputs/pareceres_lote.json REGERADO do store (decisao do Felipe):
+             aderencia 21/30 -> 28/30, nenhum outro campo mudou. Ao regerar,
+             apareceu um BUG do proprio exportar: com o store sem linha de custo
+             (triagem 100% reaproveitada nao chama a API), ele escrevia zeros por
+             cima de chamadas_llm.csv e custo_resumo.json - apagando medicao real
+             e irrecuperavel. Corrigido: sem dado no store, NAO escreve; avisa.
+             2 testes de regressao. Suite: 121 testes verdes.
+             Endpoints da Fase 2 detalhados neste arquivo, a pedido.
+ 2026-09-12  FASE 1 CONCLUIDA (1.1 a 1.8). 119 testes verdes. O parecer virou
+             registro append-only com evidencia, aderencia e custo vinculados.
+             Os 30 alertas sao triados com ZERO chamada de API, reaproveitando o
+             historico importado. outputs/ virou export regeneravel do store.
+             Arquivos da entrega tocados na fase: agente.py (Protocol + payload),
+             confronto.py (--store), agente_mcp.py (payload).
+             PENDENTE: decidir sobre regerar outputs/pareceres_lote.json (ver 1.8).
+             PROXIMO: Fase 2 - API FastAPI.
+ 2026-09-12  0.5 a 0.8 concluidos - FASE 0 FECHADA. 87 testes verdes (43 da
+             entrega + 44 novos). O portao passou: o store reproduz os 8 numeros
+             e o top 10 nominal lendo so o banco. Unico arquivo da entrega
+             alterado ate aqui: nivel_2/dados.py (parametrizacao, sem mudanca de
+             comportamento) e verificar_ambiente.py (modo --store, o original
+             intacto). PROXIMO: 1.1 - tabelas da Fase 1 + triggers.
+ 2026-09-12  0.2/0.3/0.4 concluidos. Suite: 65 testes verdes (43 originais + 22
+             novos). Nenhum teste da entrega precisou ser alterado por causa do
+             store - so os 2 testes NOVOS de 0.1 que faziam INSERT explicito em
+             lotes_ingestao e quebraram com as colunas adicionadas em v2.
+             Store real gerado em outputs/mesa.db (no .gitignore).
+             PROXIMO: 0.5 - extrair PARAMETROS_REGRAS de nivel_2/dados.py.

@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Mesa de Triagem PLD</title>
+  <!-- icone embutido (data:), sem arquivo nem recurso externo: sem ele o
+       navegador pede /favicon.ico a cada pagina e o log enche de 404 -->
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect width='16' height='16' rx='3' fill='%230B5F57'/%3E%3Crect x='3' y='8' width='2.5' height='5' fill='%23fff'/%3E%3Crect x='6.75' y='5' width='2.5' height='8' fill='%23fff'/%3E%3Crect x='10.5' y='3' width='2.5' height='10' fill='%23fff'/%3E%3C/svg%3E">
+  <!-- Nenhum recurso externo (fonte, CDN, script): a ferramenta tem que abrir
+       numa rede de banco sem acesso a internet. -->
+  <!-- {{versao}} e trocado pela API (mesa/api.py) por um hash do conteudo de
+       app.js + logica.js + estilo.css. Endereco novo = arquivo novo para o
+       navegador: sem isso ele reusava o JS antigo do cache mesmo depois de o
+       codigo mudar (o botao Metricas ficou "morto" por isso). O import map faz
+       o mesmo para o import de logica.js que esta DENTRO do app.js. -->
+  <script type="importmap">{"imports": {"./logica.js": "./logica.js?v={{versao}}"}}</script>
+  <link rel="stylesheet" href="estilo.css?v={{versao}}">
+  <script type="module" src="app.js?v={{versao}}"></script>
+</head>
+<body>
+  <header class="topo">
+    <div class="identidade">
+      <span class="nome">Mesa de Triagem</span>
+      <span class="sub">PLD · triagem de casos</span>
+    </div>
+
+    <div class="filtros" role="group" aria-label="Filtros da fila">
+      <label>
+        Estado
+        <select id="filtro-estado">
+          <option value="">todos</option>
+          <option value="novo">novo</option>
+          <option value="triado">triado</option>
+          <option value="em_analise">em análise</option>
+          <option value="concluido">concluído</option>
+        </select>
+      </label>
+      <label>
+        Origem
+        <select id="filtro-origem">
+          <option value="regra">com sinalização</option>
+          <option value="controle">controle (sem sinalização)</option>
+          <option value="todos">todos</option>
+        </select>
+      </label>
+    </div>
+
+    <a id="link-metricas" class="link-metricas" href="#/metricas">
+      <svg class="icone" viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+        <rect x="2" y="8" width="3" height="6" rx="0.5"/>
+        <rect x="6.5" y="4" width="3" height="10" rx="0.5"/>
+        <rect x="11" y="1.5" width="3" height="12.5" rx="0.5"/>
+      </svg>
+      Métricas
+    </a>
+
+    <label class="analista">
+      Analista
+      <input id="analista" type="text" placeholder="seu nome" autocomplete="off" spellcheck="false">
+    </label>
+  </header>
+
+  <main class="mesa">
+    <section class="fila" aria-labelledby="fila-titulo">
+      <header class="fila-cab">
+        <h2 id="fila-titulo">Fila</h2>
+        <span id="fila-total" class="fila-total"></span>
+      </header>
+      <ol id="fila-lista" class="fila-lista"></ol>
+      <button id="fila-mais" class="botao botao-sec fila-mais" type="button" hidden>Carregar mais</button>
+    </section>
+
+    <section id="caso" class="caso" aria-live="polite">
+      <div class="vazio">
+        <p>Selecione um caso na fila.</p>
+        <p class="vazio-sub">Cada número do parecer é ligado à operação de onde veio. Números sem procedência aparecem em vermelho.</p>
+      </div>
+    </section>
+  </main>
+
+  <div id="aviso" class="aviso" role="status" hidden></div>
+</body>
+</html>
