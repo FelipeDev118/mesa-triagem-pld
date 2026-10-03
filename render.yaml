@@ -1,0 +1,12 @@
+# Blueprint do Render: demonstracao publica da Mesa de Triagem (Dockerfile.demo).
+# Render > New > Blueprint > este repositorio. Plano gratuito: hiberna sem uso
+# (a primeira visita depois demora ~1 min) e o disco e efemero - cada reinicio
+# volta ao store montado no build.
+services:
+  - type: web
+    name: mesa-triagem-pld
+    runtime: docker
+    dockerfilePath: ./Dockerfile.demo
+    plan: free
+    healthCheckPath: /saude
+    autoDeploy: false

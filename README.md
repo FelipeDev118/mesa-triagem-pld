@@ -80,6 +80,13 @@ python -m mesa.cenario_isca --medir 101-120            # acerto da contra-isca c
 Com Docker: `docker compose run --rm mesa`, `docker compose run --rm mesa-triagem`,
 `docker compose up api` e, para rodar sozinho a cada hora, `docker compose up -d mesa-ciclo`.
 
+**Demonstração pública (Render):** `Dockerfile.demo` monta o store no build, a partir da base
+sintética e do cache de pareceres (sem chave, sem LLM), e sobe a API. `render.yaml` é o blueprint
+(Render → New → Blueprint → este repositório). A tela mostra a faixa "demonstração · dados
+sintéticos"; não há login, e o disco é efêmero: cada reinício volta ao estado inicial. Para dado
+real, a Fase 7 do roadmap (LGPD + identidade) vem antes.
+Localmente: `docker build -f Dockerfile.demo -t mesa-demo . && docker run --rm -p 127.0.0.1:8000:8000 mesa-demo`.
+
 | Caminho | O que é |
 |---|---|
 | `mesa/esquema.sql`, `mesa/db.py` | Store SQLite (esquema v8), migração por versão. Parecer, decisão, trilha e suspeita são append-only por trigger. |

@@ -17,6 +17,7 @@ import base64
 import binascii
 import hashlib
 import json
+import os
 import sqlite3
 from pathlib import Path
 from typing import Any, Literal
@@ -74,6 +75,10 @@ class Saude(BaseModel):
     versao_esquema: int
     execucao_atual: int | None
     contagens: Contagens
+    # MESA_DEMO=1 (imagem Dockerfile.demo, deploy publico): a tela mostra a faixa
+    # "demonstracao, dados sinteticos" - quem recebe o link nao pode confundir
+    # isto com dado real, nem achar que a identificacao do analista autentica
+    demo: bool = False
 
 
 class ItemFila(BaseModel):
@@ -608,6 +613,7 @@ def saude(conn: sqlite3.Connection = Depends(conexao)):
             alertas=conta("alertas"),
             pareceres=conta("pareceres"),
         ),
+        demo=os.environ.get("MESA_DEMO") == "1",
     )
 
 

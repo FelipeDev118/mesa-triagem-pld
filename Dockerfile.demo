@@ -1,0 +1,36 @@
+# Imagem da DEMONSTRACAO publica da Mesa (Render, render.yaml). Separada do
+# Dockerfile da entrega, que continua abrindo o Jupyter.
+#
+# O store e montado NO BUILD, a partir da base sintetica commitada - sem chave e
+# sem LLM: os 30 pareceres vem do cache historico (outputs/cache_pareceres.json).
+# Nada do outputs/mesa.db local entra (.dockerignore). Como o disco do Render e
+# efemero, cada reinicio volta a este estado: o que alguem registrar na demo
+# some no proximo deploy ou hibernacao. Para uma demonstracao, isso e o que se
+# quer. Para dado real, nao: ver Fase 7 no ROADMAP (LGPD + identidade).
+FROM python:3.12-slim
+
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PYTHONPATH=/app/nivel_2 \
+    MESA_DEMO=1
+
+WORKDIR /app
+
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY . .
+
+# agente.py cria o cliente do Groq na IMPORTACAO e exige a variavel - uma chave
+# falsa, so neste RUN, basta: o cache cobre os 30 alertas e nenhuma chamada sai
+# (se saisse, a chave falsa falharia e o build pararia - o que e o certo).
+# O verificar_ambiente no fim prova que o store reproduz os numeros da entrega.
+RUN python -m mesa.ingestao \
+ && python -m mesa.regras_run \
+ && python -m mesa.importar_cache \
+ && GROQ_API_KEY=sem-chave-na-demo python -m mesa.triagem \
+ && python verificar_ambiente.py --store
+
+# O Render informa a porta em $PORT; fora dele, 8000.
+EXPOSE 8000
+CMD ["sh", "-c", "uvicorn mesa.api:app --host 0.0.0.0 --port ${PORT:-8000}"]

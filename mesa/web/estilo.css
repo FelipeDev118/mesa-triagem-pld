@@ -683,3 +683,7 @@ h1, h2, h3, h4 { margin: 0; text-wrap: balance; }
   .comp-frase { grid-column: 1 / -1; }
   .grupo-link { margin-left: 0; }
 }
+
+/* ---------------------------------------------------------------- deploy de demonstracao */
+
+.faixa-demo { background: var(--medio-suave); color: var(--medio); border-bottom: 1px solid var(--medio); font-size: 0.76rem; text-align: center; padding: 0.3rem 1rem; }
