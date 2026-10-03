@@ -623,3 +623,63 @@ h1, h2, h3, h4 { margin: 0; text-wrap: balance; }
 .vigencia a { color: inherit; font-weight: 600; margin-left: 0.25rem; }
 .alerta-info { background: var(--acento-suave); border-color: var(--acento); }
 .alerta-info strong { color: var(--acento); }
+
+/* ---------------------------------------------------------------- contra-isca (Fase 6) */
+
+.caca { margin-top: 1.25rem; }
+.caca-convite { display: grid; gap: 0.6rem; justify-items: start; max-width: 52rem; }
+.caca-resumo { font-size: 0.82rem; color: var(--tinta-2); display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.25rem 0.5rem; }
+.caca-resumo .botao-mini { margin-left: auto; }
+.botao-mini { padding: 0.25rem 0.6rem; font-size: 0.76rem; }
+
+.mapa { margin: 0.5rem 0 1rem; }
+.mapa svg { width: 100%; max-width: 44rem; height: auto; display: block; margin: 0 auto; }
+.aresta { stroke: var(--linha-forte); stroke-linecap: round; }
+.aresta.no-a  { stroke: var(--medio); }
+.aresta.no-b  { stroke: var(--alto); }
+.aresta.no-ab { stroke: var(--alto); stroke-dasharray: 6 3; }
+.no circle { fill: var(--superficie); stroke: var(--linha-forte); stroke-width: 2; }
+.no.no-a circle  { fill: var(--medio-suave); stroke: var(--medio); }
+.no.no-b circle  { fill: var(--alto-suave); stroke: var(--alto); }
+.no.no-ab circle { fill: var(--alto-suave); stroke: var(--alto); stroke-dasharray: 4 2; }
+.no-isca circle { fill: var(--acento-suave); stroke: var(--acento); stroke-width: 3; }
+.no text { fill: var(--tinta); font-family: var(--mono); pointer-events: none; }
+.no-nome { font-size: 12px; font-weight: 650; }
+.no-escore { font-size: 10px; fill: var(--tinta-2); }
+.no[role="button"] { cursor: pointer; }
+.no[role="button"]:hover circle, .no[role="button"]:focus-visible circle { stroke-width: 3.5; }
+.no[role="button"]:focus { outline: none; }
+.mapa-legenda { font-size: 0.74rem; color: var(--tinta-3); text-align: center; display: flex; flex-wrap: wrap; justify-content: center; gap: 0.3rem 0.8rem; }
+.legenda::before { content: ""; display: inline-block; width: 0.7rem; height: 0.7rem; border-radius: 50%; margin-right: 0.3rem; vertical-align: -0.1rem; border: 2px solid var(--linha-forte); }
+.legenda.no-a::before  { background: var(--medio-suave); border-color: var(--medio); }
+.legenda.no-b::before  { background: var(--alto-suave); border-color: var(--alto); }
+.legenda.no-ab::before { background: var(--alto-suave); border-color: var(--alto); border-style: dashed; }
+
+.caca-grupos { list-style: none; margin: 0; padding: 0; display: grid; gap: 0.9rem; }
+.grupo-caca { border: 1px solid var(--linha); border-radius: 8px; padding: 0.75rem 0.9rem; background: var(--superficie); scroll-margin: 1rem; }
+.grupo-caca.piscando { animation: piscar 1.4s ease-out; }
+@keyframes piscar { from { box-shadow: 0 0 0 3px var(--acento); } to { box-shadow: 0 0 0 3px transparent; } }
+.grupo-cab { display: flex; flex-wrap: wrap; align-items: center; gap: 0.4rem 0.6rem; margin-bottom: 0.5rem; }
+.grupo-escore { font-family: var(--mono); font-size: 0.78rem; color: var(--tinta-2); }
+.grupo-link { margin-left: auto; font-size: 0.8rem; }
+.chip-padrao.no-a { background: var(--medio-suave); color: var(--medio); }
+.chip-padrao.no-b { background: var(--alto-suave); color: var(--alto); }
+
+.ligacoes { list-style: none; margin: 0; padding: 0; display: grid; gap: 0.6rem; }
+.ligacao-linha { margin: 0; display: flex; flex-wrap: wrap; gap: 0.3rem 0.9rem; font-size: 0.84rem; align-items: baseline; }
+.ligacao-escore { margin-left: auto; font-family: var(--mono); font-weight: 650; }
+.componentes { list-style: none; margin: 0.3rem 0 0; padding: 0 0 0 0.8rem; border-left: 2px solid var(--linha); display: grid; gap: 0.2rem; }
+.componentes li { display: grid; grid-template-columns: 9.5rem 3.6rem minmax(0, 1fr); gap: 0.5rem; font-size: 0.76rem; align-items: baseline; }
+.comp-nome { font-weight: 600; color: var(--tinta-2); }
+.comp-valor { font-family: var(--mono); color: var(--tinta-2); text-align: right; }
+.comp-frase { color: var(--tinta-2); overflow-wrap: anywhere; }
+
+.suspeita-form { margin-top: 0.75rem; display: grid; gap: 0.4rem; max-width: 40rem; }
+.suspeitas-registradas { margin: 0.75rem 0 0; padding-left: 1.1rem; font-size: 0.82rem; }
+.suspeitas-aviso q, .suspeitas-registradas q { font-style: italic; }
+
+@media (max-width: 640px) {
+  .componentes li { grid-template-columns: minmax(0, 1fr) auto; }
+  .comp-frase { grid-column: 1 / -1; }
+  .grupo-link { margin-left: 0; }
+}

@@ -12,3 +12,6 @@ outputs/mesa.db-shm
 dados/entrada/
 outputs/mesa.db.ciclo.lock
 outputs/ciclo.log
+# Fase 6: stores de cenario plantado (python -m mesa.cenario_isca) - reprodutiveis
+# pela semente, nunca versionados
+outputs/cenario_isca/

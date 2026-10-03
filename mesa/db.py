@@ -24,7 +24,7 @@ ESQUEMA_SQL = Path(__file__).resolve().parent / "esquema.sql"
 # Ate a v5, alterar o esquema significava apagar o banco e reingerir: o store so
 # continha dado sintetico reprocessavel. A v6 (Fase 4) grava DECISAO DE ANALISTA,
 # que nao se reprocessa - dai em diante o banco e migrado, nao reconstruido.
-VERSAO_ESQUEMA = 7
+VERSAO_ESQUEMA = 8
 
 # Como levar um banco da versao N para N+1. Cada entrada e o que o DDL completo
 # (esquema.sql, todo IF NOT EXISTS) NAO consegue fazer sozinho num banco que ja
@@ -35,7 +35,7 @@ VERSAO_ESQUEMA = 7
 # Uma versao que nao esta aqui nao tem migracao, e o banco e recusado - carimbar
 # a versao nova sem as colunas faria o codigo ler o que nao existe.
 #
-# O teste que sustenta isto: banco v5 e v6 (DDL congelado em tests/esquemas/)
+# O teste que sustenta isto: banco v5, v6 e v7 (DDL congelado em tests/esquemas/)
 # migrados para a versao atual tem a MESMA estrutura de um banco criado agora.
 MIGRACOES: dict[int, list[str]] = {
     5: [],  # 5 -> 6: so tabelas novas (transicoes, decisoes)
@@ -44,6 +44,7 @@ MIGRACOES: dict[int, list[str]] = {
         "CHECK (escopo IN ('completa', 'incremental'))",
         "ALTER TABLE alertas ADD COLUMN substitui_alerta_id INTEGER REFERENCES alertas(id)",
     ],
+    7: [],  # 7 -> 8: so tabela nova (suspeitas, Fase 6)
 }
 
 

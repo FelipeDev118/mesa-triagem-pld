@@ -30,7 +30,7 @@ from pydantic import BaseModel, Field
 
 import mesa  # noqa: F401  - poe nivel_2/ no sys.path
 from confronto import _normalizar_nivel
-from mesa import db, metricas, repositorio
+from mesa import contra_isca, db, metricas, repositorio
 
 Estado = Literal["novo", "triado", "em_analise", "concluido"]
 TipoDecisao = Literal["concordo", "discordo", "escalar"]
@@ -195,6 +195,63 @@ class TransicaoRegistrada(BaseModel):
     registrado_em: str
 
 
+class Componente(BaseModel):
+    """Um termo do escore de uma ligacao, com a frase de onde saiu (Fase 6)."""
+    nome: Literal["contraparte", "janela", "faixa", "distribuicao", "analise", "volume"]
+    valor: float
+    procedencia: str
+
+
+class Ligacao(BaseModel):
+    operacao_id: str
+    cliente_id: str
+    data: str | None
+    valor_brl: float
+    contraparte: str
+    lote_id: int
+    # A = na janela de dias; B = chegou durante a analise do caso
+    padroes: list[Literal["A", "B"]]
+    # o alerta vigente do cliente ligado (None se ele nao tem alerta)
+    alerta_do_cliente: int | None = None
+    # peso da contraparte (componentes[0]) x soma dos demais
+    escore: float
+    componentes: list[Componente]
+
+
+class Suspeita(BaseModel):
+    suspeita_id: int
+    alerta_origem_id: int
+    cliente_origem: str      # o caso de onde a caca partiu (a isca)
+    cliente_id: str          # o cliente que a ligacao aponta
+    operacoes: list[str]
+    # o retrato do que a tela mostrava ao registrar, recalculado no servidor
+    ligacoes: list[Ligacao]
+    versao_caca: str
+    analista_id: str
+    motivo: str
+    registrado_em: str
+
+
+class PeriodoAnalise(BaseModel):
+    inicio: str
+    fim: str | None          # None = o caso continua em analise
+    analista: str
+
+
+class ContraIsca(BaseModel):
+    alerta_id: int
+    cliente_id: str
+    execucao_id: int
+    versao_caca: str
+    parametros: dict[str, float]
+    # os limites GRAVADOS na execucao do alerta, de onde sai a "faixa"
+    limites: dict[str, float]
+    periodos_em_analise: list[PeriodoAnalise]
+    ligacoes: list[Ligacao]
+    # as suspeitas ja registradas a partir deste caso - a tela marca a ligacao
+    suspeitas: list[Suspeita]
+
+
 class Caso(BaseModel):
     alerta: ItemFila
     execucao_id: int
@@ -218,6 +275,12 @@ class Caso(BaseModel):
     # (o que este substituiu, ou antes). O analista ve o que ja se decidiu sobre
     # o cliente antes de o dado novo chegar - mas decide de novo, sobre o novo.
     decisao_anterior: Decisao | None
+    # Fase 6: suspeitas registradas A PARTIR deste caso (a caca partiu dele) e
+    # SOBRE este cliente (a caca de outro caso apontou para ele). A segunda e
+    # a que muda o trabalho: o analista abre um caso "sem sinal" e ve que
+    # alguem ja o ligou a uma isca.
+    suspeitas_registradas: list[Suspeita]
+    suspeitas_sobre_o_cliente: list[Suspeita]
 
 
 class Evidencia(BaseModel):
@@ -253,6 +316,14 @@ class NovaDecisao(BaseModel):
     # (caso sem parecer): o cliente tem que declarar o que viu, nao deixar a API
     # supor. Se o parecer atual do alerta for outro, a decisao e recusada.
     parecer_id: int | None
+
+
+class NovaSuspeita(BaseModel):
+    cliente_id: str = Field(..., min_length=1, max_length=50)
+    # as operacoes da ligacao que o analista aponta - conferidas contra a caca
+    # recalculada no servidor, nunca aceitas como vieram
+    operacoes: list[str] = Field(..., min_length=1, max_length=100)
+    motivo: str = Field(..., max_length=MAX_MOTIVO)
 
 
 Matriz = dict[str, dict[str, int]]
@@ -706,6 +777,8 @@ def caso(alerta_id: int, conn: sqlite3.Connection = Depends(conexao)):
         decisao=decisao,
         trilha=trilha,
         decisao_anterior=decisao_anterior,
+        suspeitas_registradas=_suspeitas(conn, "s.alerta_origem_id = ?", alerta_id),
+        suspeitas_sobre_o_cliente=_suspeitas(conn, "s.cliente_id = ?", cliente_id),
     )
 
 
@@ -985,6 +1058,98 @@ def execucao(execucao_id: int, conn: sqlite3.Connection = Depends(conexao)):
     if linha is None:
         raise HTTPException(404, f"execução {execucao_id} não existe")
     return _execucao_modelo(linha)
+
+
+# ============================================================================
+# Fase 6 - contra-isca
+# ============================================================================
+
+
+def _suspeitas(conn: sqlite3.Connection, filtro: str, valor) -> list[Suspeita]:
+    return [
+        Suspeita(
+            suspeita_id=r["id"], alerta_origem_id=r["alerta_origem_id"],
+            cliente_origem=r["cliente_origem"], cliente_id=r["cliente_id"],
+            operacoes=json.loads(r["operacoes_json"]), ligacoes=json.loads(r["ligacoes_json"]),
+            versao_caca=r["versao_caca"], analista_id=r["analista_id"], motivo=r["motivo"],
+            registrado_em=r["registrado_em"],
+        )
+        for r in conn.execute(
+            "SELECT s.*, a.cliente_id AS cliente_origem FROM suspeitas s "
+            f"JOIN alertas a ON a.id = s.alerta_origem_id WHERE {filtro} ORDER BY s.id",
+            (valor,),
+        )
+    ]
+
+
+@app.get("/alertas/{alerta_id}/contra-isca", response_model=ContraIsca)
+def cacar(alerta_id: int, conn: sqlite3.Connection = Depends(conexao)):
+    """O que passou ao lado deste caso: operacoes de OUTROS clientes ligadas a
+    ele por contraparte, na janela de dias (A) ou chegadas durante a analise
+    (B). Cada numero com a sua procedencia.
+
+    A excecao declarada ao "a API nao calcula nada": a caca e uma CONSULTA sob
+    demanda, nao uma regra - nao existe resultado gravado para ler. O calculo
+    vive em mesa/contra_isca.py, deterministico e testado contra um cenario
+    plantado com gabarito; a API so o expoe. E nao escreve nada."""
+    _alerta_ou_404(conn, alerta_id)
+    resultado = contra_isca.cacar(conn, alerta_id)
+    return ContraIsca(**resultado, suspeitas=_suspeitas(conn, "s.alerta_origem_id = ?", alerta_id))
+
+
+@app.post("/alertas/{alerta_id}/suspeitas", response_model=Suspeita, status_code=201)
+def registrar_suspeita(
+    alerta_id: int,
+    corpo: NovaSuspeita,
+    x_analista: str | None = Header(default=None),
+    conn: sqlite3.Connection = Depends(conexao),
+):
+    """O analista assina uma suspeita a partir de uma ligacao da caca.
+
+    O servidor RECALCULA a caca e confere que as operacoes apontadas sao
+    ligacoes atuais daquele cliente - o retrato gravado (escores, frases) sai
+    dali, nao do corpo da requisicao. Uma tela velha (a base cresceu e a
+    ligacao mudou) recebe 409, nao grava um retrato que ja nao e verdade."""
+    analista = _analista(x_analista, "registrar uma suspeita")
+    motivo = corpo.motivo.strip()
+    if not motivo:
+        raise HTTPException(422, "registrar uma suspeita exige o motivo")
+    alerta = _alerta_ou_404(conn, alerta_id)
+
+    resultado = contra_isca.cacar(conn, alerta_id)
+    do_cliente = {l["operacao_id"]: l for l in resultado["ligacoes"]
+                  if l["cliente_id"] == corpo.cliente_id}
+    pedidas = list(dict.fromkeys(corpo.operacoes))   # sem repetir, na ordem pedida
+    faltando = [o for o in pedidas if o not in do_cliente]
+    if faltando:
+        raise HTTPException(
+            409,
+            f"{', '.join(faltando)} não {'é ligação' if len(faltando) == 1 else 'são ligações'} "
+            f"atual(is) de {corpo.cliente_id} com o caso {alerta['cliente_id']} - "
+            "recarregue a caça e registre de novo",
+        )
+
+    ja = conn.execute(
+        "SELECT analista_id, registrado_em FROM suspeitas WHERE alerta_origem_id = ? "
+        "AND cliente_id = ? AND operacoes_json = ?",
+        (alerta_id, corpo.cliente_id, json.dumps(sorted(pedidas))),
+    ).fetchone()
+    if ja is not None:
+        raise HTTPException(
+            409, f"essa suspeita já foi registrada por {ja['analista_id']} em {ja['registrado_em']}"
+        )
+
+    retrato = [do_cliente[o] for o in pedidas]
+    registrado_em = db.agora_utc()
+    with conn:
+        cur = conn.execute(
+            "INSERT INTO suspeitas (alerta_origem_id, cliente_id, operacoes_json, ligacoes_json, "
+            "versao_caca, analista_id, motivo, registrado_em) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            (alerta_id, corpo.cliente_id, json.dumps(sorted(pedidas)),
+             json.dumps(retrato, ensure_ascii=False), resultado["versao_caca"], analista,
+             motivo, registrado_em),
+        )
+    return _suspeitas(conn, "s.id = ?", cur.lastrowid)[0]
 
 
 # ============================================================================

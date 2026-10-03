@@ -190,3 +190,67 @@ export function formatarPercentual(fracao) {
   if (fracao == null) return "—";
   return `${(fracao * 100).toLocaleString("pt-BR", { minimumFractionDigits: 1, maximumFractionDigits: 1 })}%`;
 }
+
+// ---------------------------------------------------------------- Fase 6
+
+// O nome do botao (decisao E1 do ROADMAP): diz o que faz. NAO "falso
+// positivo" - em PLD isso ja quer dizer "alerta que se mostrou legitimo", o
+// contrario da ideia.
+export const ROTULO_CACA = "Caçar o que passou";
+
+export const ROTULO_PADRAO = {
+  A: "fracionamento distribuído",
+  B: "passou durante a análise",
+};
+
+export const ROTULO_COMPONENTE = {
+  contraparte: "peso da contraparte",
+  janela: "perto no tempo",
+  faixa: "logo abaixo do limite",
+  distribuicao: "vários clientes",
+  analise: "durante a análise",
+  volume: "volume",
+};
+
+// As ligacoes (uma por operacao) agrupadas por cliente, para o mapa e para a
+// suspeita - que e registrada por cliente. Ordem: o cliente com a ligacao mais
+// forte primeiro; dentro dele, a ordem da API (escore). Empate: cliente_id,
+// para a tela nao reordenar entre duas cacas iguais.
+export function agruparLigacoes(ligacoes) {
+  const grupos = new Map();
+  for (const l of ligacoes) {
+    let g = grupos.get(l.cliente_id);
+    if (!g) {
+      g = { cliente_id: l.cliente_id, alerta_do_cliente: l.alerta_do_cliente ?? null,
+            escore: 0, padroes: [], ligacoes: [] };
+      grupos.set(l.cliente_id, g);
+    }
+    g.ligacoes.push(l);
+    g.escore = Math.max(g.escore, l.escore);
+    for (const p of l.padroes) if (!g.padroes.includes(p)) g.padroes.push(p);
+  }
+  for (const g of grupos.values()) g.padroes.sort();
+  return [...grupos.values()].sort((a, b) =>
+    b.escore - a.escore || a.cliente_id.localeCompare(b.cliente_id));
+}
+
+// As suspeitas ja registradas sobre um cliente, a partir desta caca.
+export function suspeitasDoCliente(suspeitas, clienteId) {
+  return (suspeitas ?? []).filter((s) => s.cliente_id === clienteId);
+}
+
+// Posicoes dos clientes ligados em volta da isca: circulo, a partir do topo,
+// no sentido horario. So geometria - o que liga e o que pesa vem da API.
+export function posicoesNoMapa(n, cx, cy, raio) {
+  return Array.from({ length: n }, (_, i) => {
+    const angulo = -Math.PI / 2 + (2 * Math.PI * i) / Math.max(n, 1);
+    return { x: cx + raio * Math.cos(angulo), y: cy + raio * Math.sin(angulo) };
+  });
+}
+
+// Escore -> espessura da linha no mapa, entre min e max. O mais forte da caca
+// e a referencia: a escala e relativa ao que se esta vendo.
+export function espessura(escore, maior, min = 1, max = 6) {
+  if (!(maior > 0)) return min;
+  return min + (max - min) * Math.min(1, Math.max(0, escore / maior));
+}

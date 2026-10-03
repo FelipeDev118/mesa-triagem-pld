@@ -7,9 +7,10 @@
 // malformada (ou maliciosa) em codigo rodando no navegador do analista.
 
 import {
-  alvoDaFonte, camposDaDecisao, explicacaoDaMarca, formatarBRL, formatarData,
-  formatarDuracao, formatarMomento, formatarPercentual, operacaoEhAlvo, podeDecidir, rotuloDaFonte, ROTULO_DECISAO,
-  ROTULO_ESTADO, ROTULO_TRANSICAO, segmentar, situacaoDaFila,
+  agruparLigacoes, alvoDaFonte, camposDaDecisao, espessura, explicacaoDaMarca, formatarBRL, formatarData,
+  formatarDuracao, formatarMomento, formatarPercentual, operacaoEhAlvo, podeDecidir, posicoesNoMapa,
+  rotuloDaFonte, ROTULO_CACA, ROTULO_COMPONENTE, ROTULO_DECISAO, ROTULO_ESTADO, ROTULO_PADRAO,
+  ROTULO_TRANSICAO, segmentar, situacaoDaFila, suspeitasDoCliente,
 } from "./logica.js";
 
 const $ = (seletor, raiz = document) => raiz.querySelector(seletor);
@@ -70,6 +71,8 @@ const estado = {
   caso: null,
   evidencias: [],
   marcaSelecionada: null,
+  // a caca do caso aberto (Fase 6) - so existe depois do clique no botao
+  caca: null,
 };
 
 const CHAVE_ANALISTA = "mesa-triagem.analista";
@@ -186,6 +189,7 @@ function mostrarErroFila(erro) {
 // ---------------------------------------------------------------- caso
 
 async function abrirCaso(alertaId) {
+  if (estado.alertaAberto !== alertaId) estado.caca = null;
   estado.alertaAberto = alertaId;
   estado.marcaSelecionada = null;
   desenharFila();
@@ -214,9 +218,11 @@ function desenharCaso(caso, evidencias) {
   return h("article", { class: "caso-conteudo" },
     cabecalhoCaso(caso),
     avisoDeVigencia(caso),
+    avisoDeSuspeitas(caso),
     h("div", { class: "caso-corpo" },
       colunaParecer(caso),
-      colunaEvidencia(caso, evidencias)));
+      colunaEvidencia(caso, evidencias)),
+    blocoContraIsca(caso));
 }
 
 function cabecalhoCaso(caso) {
@@ -684,6 +690,250 @@ function blocoTrilha(trilha) {
         h("span", { class: t.ator_tipo === "sistema" ? "ator ator-sistema" : "ator" }, t.ator),
         h("span", {}, ROTULO_PASSO[`${t.estado_anterior}>${t.estado_novo}`]
           ?? `${ROTULO_ESTADO[t.estado_anterior]} → ${ROTULO_ESTADO[t.estado_novo]}`)))));
+}
+
+// ---------------------------------------------------------------- contra-isca (Fase 6)
+//
+// O caminhao dos 30 kg era verdade - e era isca. Enquanto o analista olha o
+// caso chamativo, o que passou AO LADO dele, em outros clientes? A caca e da
+// API (mesa/contra_isca.py); aqui so se desenha, e cada ligacao aparece com a
+// frase de onde vem cada parte do escore.
+
+// Quem ja ligou ESTE cliente a uma isca. E o aviso que muda o trabalho: o
+// caso pode estar "sem sinal", e alguem ja o apontou a partir de outro caso.
+function avisoDeSuspeitas(caso) {
+  const sobre = caso.suspeitas_sobre_o_cliente ?? [];
+  if (!sobre.length) return null;
+  return h("div", { class: "alerta-caixa alerta-atencao suspeitas-aviso" },
+    h("strong", {}, sobre.length === 1 ? "Suspeita registrada sobre este cliente. "
+                                       : `${sobre.length} suspeitas registradas sobre este cliente. `),
+    h("ul", {}, ...sobre.map((s) =>
+      h("li", {},
+        `${s.analista_id}, em ${formatarMomento(s.registrado_em)}, a partir do caso `,
+        h("a", { href: `#/alerta/${s.alerta_origem_id}` }, s.cliente_origem),
+        ` (${s.operacoes.join(", ")}): `,
+        h("q", {}, s.motivo)))));
+}
+
+function blocoContraIsca(caso) {
+  const conteudo = h("div", { id: "caca" });
+  const caca = estado.caca?.alerta_id === caso.alerta.alerta_id ? estado.caca : null;
+  conteudo.append(caca ? resultadoDaCaca(caca, caso) : convidarACacar(caso));
+  return h("section", { class: "bloco caca" },
+    h("h3", {}, "O que passou ao lado deste caso"), conteudo);
+}
+
+function convidarACacar(caso) {
+  return h("div", { class: "caca-convite" },
+    h("p", { class: "nota" },
+      "As regras olham um cliente por vez. Fracionamento espalhado por vários clientes, ou um volume grande ",
+      "que entra enquanto este caso está em análise, não dispara regra nenhuma. A caça procura operações de ",
+      "outros clientes ligadas a este pela contraparte — perto no tempo ou durante a análise. Só consulta: ",
+      "não grava nada."),
+    h("button", { type: "button", class: "botao", onclick: () => cacar(caso.alerta.alerta_id) }, ROTULO_CACA));
+}
+
+async function cacar(alertaId) {
+  const alvo = $("#caca");
+  if (alvo) alvo.replaceChildren(h("p", { class: "carregando" }, "Caçando…"));
+  try {
+    const caca = await api(`/alertas/${alertaId}/contra-isca`);
+    if (estado.alertaAberto !== alertaId) return;
+    estado.caca = caca;
+    $("#caca")?.replaceChildren(resultadoDaCaca(caca, estado.caso));
+  } catch (erro) {
+    if (estado.alertaAberto !== alertaId) return;
+    $("#caca")?.replaceChildren(h("div", { class: "erro" }, erro.message));
+  }
+}
+
+function resultadoDaCaca(caca, caso) {
+  const grupos = agruparLigacoes(caca.ligacoes);
+  const p = caca.parametros;
+  const periodos = caca.periodos_em_analise;
+  const resumo = h("p", { class: "caca-resumo" },
+    grupos.length
+      ? `${caca.ligacoes.length} ${caca.ligacoes.length === 1 ? "operação" : "operações"} em `
+        + `${grupos.length} ${grupos.length === 1 ? "cliente" : "clientes"}, da ligação mais forte para a mais fraca. `
+      : "Nenhuma operação de outro cliente ligada a este caso. ",
+    `Janela de ±${p.janela_dias} dias; limite individual de ${formatarBRL(caca.limites.frac_max_individual)} `,
+    `(execução ${caca.execucao_id}); `,
+    periodos.length
+      ? `${periodos.length === 1 ? "período" : "períodos"} em análise: `
+        + periodos.map((x) => `${formatarMomento(x.inicio)} → ${x.fim ? formatarMomento(x.fim) : "agora"} (${x.analista})`).join("; ")
+        + "."
+      : "o caso nunca esteve em análise, então só a janela de dias conta.",
+    h("button", { type: "button", class: "botao botao-sec botao-mini", onclick: () => cacar(caca.alerta_id) },
+      "Caçar de novo"));
+  if (!grupos.length) return h("div", {}, resumo);
+
+  return h("div", { class: "caca-resultado" },
+    resumo,
+    mapaDaCaca(caca.cliente_id, grupos),
+    h("p", { class: "nota" },
+      "O sistema caça, você decide: uma ligação só vira registro quando um analista assina a suspeita, com o motivo."),
+    h("ol", { class: "caca-grupos" }, ...grupos.map((g) => grupoDaCaca(g, caca, caso))));
+}
+
+const SVG = "http://www.w3.org/2000/svg";
+function s(tag, atributos, ...filhos) {
+  const el = document.createElementNS(SVG, tag);
+  for (const [chave, valor] of Object.entries(atributos ?? {})) {
+    if (valor == null) continue;
+    if (chave.startsWith("on")) el.addEventListener(chave.slice(2), valor);
+    else el.setAttribute(chave, valor);
+  }
+  for (const filho of filhos.flat()) {
+    if (filho == null) continue;
+    el.append(filho instanceof Node ? filho : document.createTextNode(String(filho)));
+  }
+  return el;
+}
+
+const MAX_NO_MAPA = 12;
+
+// A isca no centro, os clientes ligados em volta. Espessura = escore (relativo
+// ao mais forte). Cor = padrao. Clicar num cliente leva a ligacao na lista.
+function mapaDaCaca(isca, grupos) {
+  const visiveis = grupos.slice(0, MAX_NO_MAPA);
+  const L = 640, A = 340, cx = L / 2, cy = A / 2;
+  const pos = posicoesNoMapa(visiveis.length, cx, cy, 128);
+  const maior = visiveis[0]?.escore ?? 0;
+  const irPara = (cliente) => {
+    const alvo = document.getElementById(`grupo-${cliente}`);
+    if (!alvo) return;
+    alvo.scrollIntoView({ behavior: "smooth", block: "center" });
+    alvo.classList.remove("piscando");
+    void alvo.offsetWidth;  // reinicia a animacao
+    alvo.classList.add("piscando");
+  };
+  const classePadrao = (g) => `no-${g.padroes.join("").toLowerCase()}`;
+
+  const linhas = visiveis.map((g, i) => s("line", {
+    x1: cx, y1: cy, x2: pos[i].x, y2: pos[i].y, class: `aresta ${classePadrao(g)}`,
+    "stroke-width": espessura(g.escore, maior).toFixed(2),
+  }));
+  const nos = visiveis.map((g, i) => s("g", {
+    class: `no ${classePadrao(g)}`, tabindex: "0", role: "button",
+    "aria-label": `${g.cliente_id}: escore ${g.escore.toFixed(2)}, ${g.padroes.map((x) => ROTULO_PADRAO[x]).join(" e ")}`,
+    onclick: () => irPara(g.cliente_id),
+    onkeydown: (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); irPara(g.cliente_id); } },
+  },
+    s("title", {}, `${g.cliente_id} · escore ${g.escore.toFixed(2)}`),
+    s("circle", { cx: pos[i].x, cy: pos[i].y, r: 25 }),
+    s("text", { x: pos[i].x, y: pos[i].y - 2, "text-anchor": "middle", class: "no-nome" }, g.cliente_id.replace(/^CLI-/, "")),
+    s("text", { x: pos[i].x, y: pos[i].y + 11, "text-anchor": "middle", class: "no-escore" }, g.escore.toFixed(2))));
+
+  return h("figure", { class: "mapa" },
+    s("svg", { viewBox: `0 0 ${L} ${A}`, role: "group", "aria-label": `Clientes ligados a ${isca}` },
+      ...linhas,
+      s("g", { class: "no no-isca" },
+        s("circle", { cx, cy, r: 36 }),
+        s("text", { x: cx, y: cy - 3, "text-anchor": "middle", class: "no-nome" }, isca),
+        s("text", { x: cx, y: cy + 12, "text-anchor": "middle", class: "no-escore" }, "o caso")),
+      ...nos),
+    h("figcaption", { class: "mapa-legenda" },
+      h("span", { class: "legenda no-a" }, ROTULO_PADRAO.A),
+      h("span", { class: "legenda no-b" }, ROTULO_PADRAO.B),
+      h("span", { class: "legenda no-ab" }, "os dois"),
+      h("span", {}, "número = escore; espessura da linha = força da ligação"
+        + (grupos.length > MAX_NO_MAPA ? `; no mapa, os ${MAX_NO_MAPA} mais fortes de ${grupos.length}` : ""))));
+}
+
+function grupoDaCaca(g, caca, caso) {
+  const registradas = suspeitasDoCliente(caca.suspeitas, g.cliente_id);
+  // o formulario some so quando as suspeitas ja cobrem TODAS as operacoes de
+  // agora - a base cresce, e uma ligacao nova do mesmo cliente pode aparecer
+  const cobertas = new Set(registradas.flatMap((x) => x.operacoes));
+  const tudoCoberto = g.ligacoes.every((l) => cobertas.has(l.operacao_id));
+  return h("li", { class: "grupo-caca", id: `grupo-${g.cliente_id}` },
+    h("header", { class: "grupo-cab" },
+      h("span", { class: "cliente" }, g.cliente_id),
+      ...g.padroes.map((x) => h("span", { class: `chip chip-padrao no-${x.toLowerCase()}` }, ROTULO_PADRAO[x])),
+      h("span", { class: "grupo-escore", title: "escore da ligação mais forte deste cliente" },
+        `escore ${g.escore.toFixed(2)}`),
+      g.alerta_do_cliente != null
+        ? h("a", { class: "grupo-link", href: `#/alerta/${g.alerta_do_cliente}` }, "abrir o caso →")
+        : null),
+    h("ul", { class: "ligacoes" }, ...g.ligacoes.map((l) =>
+      h("li", { class: "ligacao" },
+        h("p", { class: "ligacao-linha" },
+          h("span", { class: "nowrap" }, formatarData(l.data)),
+          h("span", { class: "mono" }, l.operacao_id),
+          h("span", { class: "num" }, formatarBRL(l.valor_brl)),
+          h("span", { class: "contraparte" }, l.contraparte),
+          h("span", { class: "ligacao-escore" }, l.escore.toFixed(2))),
+        h("ul", { class: "componentes" }, ...l.componentes.map((c) =>
+          h("li", {},
+            h("span", { class: `comp-nome comp-${c.nome}` }, ROTULO_COMPONENTE[c.nome] ?? c.nome),
+            h("span", { class: "comp-valor" }, c.nome === "contraparte" ? `× ${c.valor.toFixed(2)}` : `+ ${c.valor.toFixed(2)}`),
+            h("span", { class: "comp-frase" }, c.procedencia))))))),
+    registradas.length
+      ? h("ul", { class: "suspeitas-registradas" }, ...registradas.map((x) =>
+          h("li", {}, h("strong", {}, "Suspeita registrada"),
+            ` por ${x.analista_id} em ${formatarMomento(x.registrado_em)} (${x.operacoes.join(", ")}): `,
+            h("q", {}, x.motivo))))
+      : null,
+    tudoCoberto ? null : formularioSuspeita(g, caca, caso));
+}
+
+function formularioSuspeita(g, caca, caso) {
+  const enviar = h("button", { type: "submit", class: "botao" }, "Registrar suspeita");
+  const form = h("form", { class: "suspeita-form" },
+    h("label", { class: "campo" },
+      h("span", { class: "campo-rotulo" }, `Por que ${g.cliente_id} é suspeito? (obrigatório)`),
+      h("textarea", { name: "motivo", rows: "2", maxlength: "2000", required: true })),
+    h("p", { class: "nota" },
+      `Registra ${g.ligacoes.length === 1 ? "esta operação" : `estas ${g.ligacoes.length} operações`} `,
+      "com o retrato da caça de agora. Não cria alerta nem muda o caso; não se apaga."),
+    enviar);
+  form.addEventListener("input", () => {
+    delete enviar.dataset.armado;
+    enviar.textContent = "Registrar suspeita";
+    enviar.classList.remove("botao-confirmar");
+  });
+  // duas etapas, como a decisao: o registro e append-only
+  form.addEventListener("submit", (evento) => {
+    evento.preventDefault();
+    const analista = $("#analista").value.trim();
+    if (!analista) {
+      avisar("Informe seu nome no campo Analista antes de registrar uma suspeita.", "erro");
+      $("#analista").focus();
+      return;
+    }
+    if (enviar.dataset.armado !== "1") {
+      enviar.dataset.armado = "1";
+      enviar.textContent = `Confirmar: suspeita sobre ${g.cliente_id}`;
+      enviar.classList.add("botao-confirmar");
+      return;
+    }
+    registrarSuspeita(form, g, caca, analista);
+  });
+  return form;
+}
+
+async function registrarSuspeita(form, g, caca, analista) {
+  const botao = form.querySelector("button[type=submit]");
+  botao.disabled = true;
+  const alertaId = caca.alerta_id;
+  try {
+    await api(`/alertas/${alertaId}/suspeitas`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-Analista": analista },
+      body: JSON.stringify({
+        cliente_id: g.cliente_id,
+        operacoes: g.ligacoes.map((l) => l.operacao_id),
+        motivo: new FormData(form).get("motivo"),
+      }),
+    });
+    avisar(`Suspeita sobre ${g.cliente_id} registrada.`, "ok");
+  } catch (erro) {
+    avisar(erro.message, "erro");
+    botao.disabled = false;
+    if (erro.status !== 409) return;
+  }
+  // a caca de novo: a suspeita aparece no grupo, e o retrato e o do servidor
+  await cacar(alertaId);
 }
 
 // ---------------------------------------------------------------- metricas (Fase 4.2 / 4.3)

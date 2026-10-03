@@ -149,7 +149,7 @@ def _estrutura(conn) -> dict:
     return est
 
 
-@pytest.mark.parametrize("versao", [5, 6])
+@pytest.mark.parametrize("versao", [5, 6, 7])
 def test_banco_antigo_migrado_tem_a_estrutura_de_um_banco_novo(tmp_path, versao):
     """<<< aceite do 5.0 >>> A garantia que faz a migracao ser confiavel: nao
     "as tabelas novas existem", mas "o banco migrado e indistinguivel de um

@@ -915,6 +915,9 @@
      analista, nunca alerta criado sozinho (principio 1)
 
  DECISOES A CONFIRMAR COM O FELIPE
+   (2026-10-03: Felipe mandou "atacar a proxima fase"; E1 e E3 seguiram a
+   RECOMENDACAO, as duas reversiveis sem perda - trocar o nome e uma constante
+   em logica.js; suspeita registrada continua valendo se um dia virar alerta)
    E1. Nome do botao. Opcoes: "Cacar o que passou" (recomendado - diz o que
        faz), "Contra-isca", "O que passou enquanto olhavamos".
    E2. RESOLVIDA: as duas hipoteses, ambas no portao. Ordem de construcao so
@@ -925,7 +928,7 @@
        formal para outro cliente exigiria nova `origem` em alertas, cujo CHECK
        nao se altera no SQLite (reconstrucao de tabela). Fica para depois.
 
- [ ] 6.0  Cenario de isca plantado - ANTES do detector
+ [x] 6.0  Cenario de isca plantado - ANTES do detector
           - gerador deterministico (semente fixa): um caso chamativo (a isca) +
             padrao A: N operacoes pequenas em outros clientes ligadas a ela
               (contraparte rara, janela de dias, logo abaixo do limite)
@@ -938,39 +941,134 @@
           ACEITE: o cenario, ingerido num store de teste, NAO e pego pelas
                   regras de hoje (prova o ponto cego); o gabarito de cada
                   padrao fica gravado junto do cenario.
- [ ] 6.1  Motor de ligacoes (mesa/contra_isca.py)
+          FEITO 2026-10-03: mesa/cenario_isca.py, montado POR CIMA da base real
+          (as 57 coincidencias dela entram como ruido de graca). Isca CLI-101
+          (uma operacao enorme -> valor atipico), padrao A (5-8 clientes, uma
+          operacao cada a 86-99% de R$ 20 mil, contraparte rara, +-5 dias), B
+          (3 empresas grandes, R$ 80-160 mil, lote ingerido com a isca em
+          analise), ruido: popular na janela e na faixa, rara fora da janela,
+          lote depois da analise. Horarios de lote e trilha FABRICADOS (so em
+          store de cenario; montar() recusa banco existente). Semente 7: 0
+          sinalizacao em plantada, todo cliente plantado 'controle', isca
+          'regra'. gabarito.json + os 3 lotes gravados ao lado do banco.
+ [x] 6.1  Motor de ligacoes (mesa/contra_isca.py)
           - dado um alerta: operacoes de OUTROS clientes pontuadas por
             contraparte rara, janela de tempo e faixa abaixo do limite; cada
             componente do escore com a sua procedencia
           ACEITE: no cenario plantado, as N plantadas no topo da lista; a
                   contraparte popular do ruido nao sobe; mudar os parametros
                   gravados da execucao muda a faixa "abaixo do limite".
- [ ] 6.2  Medir o acerto
+          FEITO 2026-10-03: escore = peso da contraparte x (janela + faixa +
+          distribuicao [+ analise + volume no B]), cada termo com a frase de
+          procedencia. DECISAO CENTRAL: peso = 1/(1 + clientes que usam a
+          contraparte FORA da ligacao), nao "quantos clientes a usam" - o
+          fracionamento distribuido usa a mesma contraparte em muitos clientes,
+          SO na janela; contar o total puniria o padrao procurado. Semente 7:
+          as 7 plantadas A no topo (2,50-3,00), popular <= 0,33.
+          DOIS ACHADOS NA SEMENTE DE DESENVOLVIMENTO, corrigidos por principio:
+          (1) a cobertura de um cliente B (operacao de ABRIL) chegou no lote da
+          analise e subiu acima das plantadas B: "passou enquanto olhavamos"
+          passou a exigir DATA da operacao no periodo (ate janela_dias antes do
+          inicio), nao so o lote; (2) 3 clientes reais usando a mesma
+          contraparte na janela sem estar na faixa contavam como
+          "distribuicao": a distribuicao do A conta so quem esta na janela E na
+          faixa. Mutacao: 6 defeitos reintroduzidos (peso pelo total, B sem
+          data, limite fixo, periodo sem fim, distribuicao sem filtro, janela
+          sem limite), todos pegos - o da distribuicao so depois de um teste
+          novo (sobreviveu ao primeiro).
+ [x] 6.2  Medir o acerto
           - varias sementes do cenario; quantas plantadas o motor acha
             (cobertura) e quanto do topo e ruido (precisao)
           - meta definida ANTES de medir e registrada; nao atingiu = redesenha
             o motor, nao baixa a meta
           ACEITE: numeros gravados no roadmap, por semente, com a meta ao lado.
- [ ] 6.3  Esquema v8 e API
+          META (registrada em 2026-10-03, ANTES de rodar a medicao):
+            - semente de DESENVOLVIMENTO: 7 (a unica olhada ao construir);
+              sementes de MEDICAO: 101 a 120, nunca abertas antes de medir
+            - "topo" = as |A| + |B| primeiras ligacoes da lista
+            - cobertura A (plantadas A no topo / |A|): media >= 90%, e nenhuma
+              semente abaixo de 70%
+            - cobertura B (idem para B): media >= 90%, nenhuma abaixo de 2/3
+            - precisao do topo (plantadas no topo / tamanho do topo): media >= 80%
+            - ruido plantado: contraparte popular NUNCA no topo; ruido fora da
+              janela e lote depois da analise NUNCA na lista (nem como ligacao)
+          MEDIDO 2026-10-03 (python -m mesa.cenario_isca --medir 101-120):
+            semente: A(n)    B     precisao  margem  ligacoes
+              101 : 100%(7) 100%   100%     3,15    19
+              102 : 100%(7) 100%   100%     3,67    17
+              103 : 100%(8) 100%   100%     5,14    17
+              104 : 100%(6) 100%   100%     6,30    14
+              105 : 100%(7) 100%   100%     2,13    17
+              106 : 100%(6) 100%   100%     3,67    16
+              107 : 100%(8) 100%   100%     3,67    20
+              108 : 100%(7) 100%   100%     3,00    21
+              109 : 100%(5) 100%   100%     1,78    15
+              110 : 100%(5) 100%   100%     3,67    12
+              111 : 100%(8) 100%   100%     4,83    16
+              112 : 100%(6) 100%   100%     3,50    16
+              113 : 100%(5) 100%   100%     3,05    15
+              114 : 100%(5) 100%   100%     3,67    14
+              115 : 100%(7) 100%   100%     3,86    17
+              116 : 100%(6) 100%   100%     3,50    18
+              117 : 100%(7) 100%   100%     4,20    20
+              118 : 100%(6) 100%   100%     2,67    18
+              119 : 100%(7) 100%   100%     4,41    16
+              120 : 100%(8) 100%   100%     1,52    19
+            META: cobertura A >= 90% (min 70%), B >= 90% (min 2/3), precisao
+            >= 80% -> ATINGIDA nas 20; ruido popular no topo: 0; fora da janela
+            e depois da analise na lista: 0. Margem = pior plantada / melhor
+            nao plantada (minima 1,52, semente 120): a separacao nao e sorte.
+            LEITURA HONESTA (nao e "a caca acha 100% no mundo"): o cenario foi
+            escrito com as mesmas caracteristicas que o motor pontua - e
+            CIRCULAR por construcao. Prova que o motor acha o que foi desenhado
+            para achar, resistindo aos 3 ruidos plantados e as coincidencias da
+            base real; nao prova cobertura de lavagem real, que pode nao usar
+            contraparte comum. Os ~7 nao plantados por semente (16,9 ligacoes
+            em media) sao o "lixo" que o analista ve abaixo das plantadas.
+ [x] 6.3  Esquema v8 e API
           - tabela suspeitas (append-only): alerta de origem, cliente e
             operacoes apontados, componentes do escore, analista, motivo, quando
           - GET /alertas/{id}/contra-isca (ligacoes com procedencia);
             POST /alertas/{id}/suspeitas (registrar, com X-Analista)
           ACEITE: v7 migrado == v8 novo (DDL v7 congelado); suspeita nao se
                   altera nem se apaga; a caca nao escreve nada, so o registro.
- [ ] 6.4  Tela: o botao e o mapa
+          FEITO 2026-10-03: tests/esquemas/esquema_v7.sql (do git), migracao
+          7->8 sem ALTER (so tabela nova); estrutura migrada == nova (v5, v6,
+          v7). suspeitas com 2 triggers append-only e CHECK de motivo/analista
+          (COALESCE). POST recalcula a caca e grava o RETRATO do servidor (nao
+          o que o navegador mandou); operacao que nao e ligacao atual daquele
+          cliente -> 409; suspeita identica -> 409 dizendo quem registrou. GET
+          da caca: bytes do banco identicos antes/depois. O caso traz
+          suspeitas_registradas (a partir dele) e suspeitas_sobre_o_cliente
+          (outro caso o apontou).
+ [x] 6.4  Tela: o botao e o mapa
           - "Cacar o que passou" no caso; a isca no centro, os clientes ligados
             em volta, cada ligacao com a frase de procedencia; registrar
             suspeita a partir de uma ligacao
           ACEITE: no navegador, com o cenario plantado, o analista ve as
                   ligacoes plantadas e registra uma suspeita que aparece no caso.
- [ ] 6.5  Padrao B no motor: o que entrou enquanto o caso estava em analise
+          FEITO 2026-10-03, no navegador embutido, servidor na porta 8765 sobre
+          o cenario da semente 7 (o store real nao foi tocado): botao "Cacar o
+          que passou" -> mapa (isca no centro, 12 clientes mais fortes em
+          volta, espessura = escore, cor = padrao), 23 grupos com cada termo e
+          sua frase; registro em dois cliques como a decisao; a suspeita
+          apareceu no grupo e, via "abrir o caso", no caso do CLI-115 ("a
+          partir do caso CLI-101"). A caca sobrevive ao redesenho quando o
+          nome do analista muda. 400 px: sem rolagem horizontal. 0 erro no
+          console. Logica pura em logica.js com 6 testes no Node.
+ [x] 6.5  Padrao B no motor: o que entrou enquanto o caso estava em analise
           - janela = os periodos em_analise da trilha; operacoes = as de lotes
             ingeridos nesses periodos, em outros clientes, ligadas ao caso
           ACEITE: trilha e lotes fabricados com horarios conhecidos -> so as
                   operacoes dos lotes dentro da janela aparecem; no cenario
                   plantado, as de valor alto do padrao B sobem mesmo NAO
                   estando abaixo de limite nenhum; acerto medido como no 6.2.
+          FEITO 2026-10-03 (construido junto do 6.1): periodos pela trilha
+          (aberto = "agora", saida sem entrada nao vira periodo); lote dentro
+          do periodo E data da operacao no periodo. Teste: mesma contraparte,
+          valor e data do B, so o lote chegando depois de devolvida a isca ->
+          fora da lista; caso reaberto e lote novo -> entra com "-> agora".
+          Acerto B no 6.2: 100% nas 20 sementes.
 
 -------------------------------------------------------------------------------
  FASE 7 - PRONTO PARA PILOTO: DADO QUE NAO SAI, IDENTIDADE QUE SE PROVA
@@ -1107,14 +1205,21 @@
  [ ] data como TEXT 'YYYY-MM-DD' (SQLite nao tem tipo data). Ordena correto
      como string; nunca misturar formato na escrita.
  [ ] Portabilidade Postgres: todo o DDL e portavel exceto os TRIGGERS - eram 2
-     quando esta nota foi escrita, hoje sao 10 (pareceres, transicoes,
-     decisoes, operacoes, operacoes_historico), e o de versao de operacao faz
+     quando esta nota foi escrita, hoje sao 12 (pareceres, transicoes,
+     decisoes, operacoes, operacoes_historico, suspeitas), e o de versao de operacao faz
      INSERT, nao so RAISE. RAISE(ABORT) -> RAISE EXCEPTION em funcao plpgsql.
      Continua localizado (um arquivo), mas nao e mais "2 linhas".
 
 ===============================================================================
  REGISTRO DE EXECUCAO (o que foi feito, quando, e o que a evidencia mostrou)
 ===============================================================================
+ 2026-10-03  FASE 6 CONCLUIDA (6.0 a 6.5). 301 testes (+36: 35 da contra-isca,
+             1 da migracao v7). Esquema v8 (tabela suspeitas). A meta do 6.2
+             foi gravada ANTES de medir, com semente de desenvolvimento (7)
+             separada das de medicao (101-120): 100% de cobertura A e B e de
+             precisao nas 20, margem minima 1,52 - lido com a ressalva de que o
+             cenario e circular por construcao (ver 6.2). E1 e E3 seguiram a
+             recomendacao. PROXIMO: Fase 7 (LGPD + identidade), depois deploy.
  2026-09-30  RENUMERACAO (decisao do Felipe): a contra-isca - ideia dele, a
              partir da historia do caminhao-isca - entra como FASE 6. A fase
              "pronto para piloto" detalhada mais cedo hoje (LGPD + identidade)

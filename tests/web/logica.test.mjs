@@ -10,6 +10,7 @@ import {
   alvoDaFonte, explicacaoDaMarca, formatarBRL, formatarData, formatarMomento,
   operacaoEhAlvo, rotuloDaFonte, segmentar, situacaoDaFila,
   camposDaDecisao, podeDecidir, formatarDuracao, formatarPercentual,
+  agruparLigacoes, suspeitasDoCliente, posicoesNoMapa, espessura, ROTULO_CACA,
 } from "../../mesa/web/logica.js";
 
 // ---------- segmentar: o texto do parecer nunca pode perder um pedaco ----------
@@ -163,4 +164,51 @@ test("percentual sem dado e traco, nunca 0%", () => {
   assert.equal(formatarPercentual(null), "—");
   assert.equal(formatarPercentual(0), "0,0%");
   assert.equal(formatarPercentual(23 / 30), "76,7%");
+});
+
+// ---------- Fase 6: contra-isca ----------
+
+const lig = (op, cliente, escore, padroes, alerta = 40) =>
+  ({ operacao_id: op, cliente_id: cliente, escore, padroes, alerta_do_cliente: alerta });
+
+test("agruparLigacoes junta por cliente e ordena pela ligacao mais forte", () => {
+  const grupos = agruparLigacoes([
+    lig("OP-1", "CLI-200", 1.0, ["B"]),
+    lig("OP-2", "CLI-111", 2.5, ["A"]),
+    lig("OP-3", "CLI-200", 3.0, ["A"]),
+    lig("OP-4", "CLI-150", 2.5, ["A"]),
+  ]);
+  assert.deepEqual(grupos.map((g) => g.cliente_id), ["CLI-200", "CLI-111", "CLI-150"]);
+  assert.equal(grupos[0].escore, 3.0);
+  assert.deepEqual(grupos[0].padroes, ["A", "B"]);
+  assert.deepEqual(grupos[0].ligacoes.map((l) => l.operacao_id), ["OP-1", "OP-3"]);
+});
+
+test("agruparLigacoes sem ligacao devolve lista vazia", () => {
+  assert.deepEqual(agruparLigacoes([]), []);
+});
+
+test("suspeitasDoCliente filtra pelo cliente apontado", () => {
+  const s = [{ cliente_id: "CLI-111", suspeita_id: 1 }, { cliente_id: "CLI-112", suspeita_id: 2 }];
+  assert.deepEqual(suspeitasDoCliente(s, "CLI-112").map((x) => x.suspeita_id), [2]);
+  assert.deepEqual(suspeitasDoCliente(undefined, "CLI-112"), []);
+});
+
+test("posicoesNoMapa comeca no topo e da a volta no circulo", () => {
+  const p = posicoesNoMapa(4, 100, 100, 50);
+  assert.equal(p.length, 4);
+  assert.ok(Math.abs(p[0].x - 100) < 1e-9 && Math.abs(p[0].y - 50) < 1e-9);   // topo
+  assert.ok(Math.abs(p[1].x - 150) < 1e-9);                                    // direita
+  assert.deepEqual(posicoesNoMapa(0, 0, 0, 1), []);
+});
+
+test("espessura e relativa a ligacao mais forte e fica na faixa", () => {
+  assert.equal(espessura(3, 3), 6);
+  assert.equal(espessura(0, 3), 1);
+  assert.equal(espessura(1.5, 3), 3.5);
+  assert.equal(espessura(1, 0), 1);
+});
+
+test("o botao nao se chama falso positivo", () => {
+  assert.ok(!/falso/i.test(ROTULO_CACA));
 });
